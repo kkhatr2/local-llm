@@ -16,7 +16,7 @@ There are **14 modeled components**:
 | C1 | CompositionRoot | Application | Planned | Constructs concrete settings, clients, stores, clocks, and runtimes; owns startup wiring. |
 | C2 | ConfigLoader | Application | Implemented | Reads `local_llm.yaml`, validates fields, merges defaults, and produces immutable settings. |
 | C3 | ModelRegistry | Application | Implemented | Tracks aliases, repo IDs, filenames, revisions, options, and registered/downloaded state. |
-| C4 | HfCliDownloader | Application | Planned | Invokes `huggingface-cli download`, writes into `models/<alias>/`, and verifies the GGUF file. |
+| C4 | HfCliDownloader | Application | Implemented | Invokes `huggingface-cli download`, writes into `models/<alias>/`, and verifies the GGUF file. |
 | C5 | ResourcePreflight | Application | Planned | Checks disk and memory estimates and fails closed before download or load. |
 | C6 | LlamaRuntimeAdapter | Application | Planned | Loads a GGUF with merged llama options, generates completions, and unloads after response. |
 | C7 | ChatRoutes | Application | Planned | Exposes `/health`, `/v1/models`, and `/v1/models/{alias}/chat/completions`. |
@@ -317,7 +317,7 @@ flowchart TB
 ## Verified and unverified
 
 - Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all response-cache, config-loader, and model-registry tests.
+- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all response-cache, config-loader, model-registry, and Hugging Face CLI downloader tests.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
 - Pending: API scaffold and integration of C1–C8 and C10 into the containerized service.
 

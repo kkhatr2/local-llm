@@ -42,10 +42,10 @@ If these documents disagree with implementation comments, update the documents f
 
 ## Current state
 
-- Implemented: `local_llm/cache.py`, `local_llm/config.py`, `local_llm/registry.py`, cache tests, config tests, registry tests, Docker artifacts, `local_llm.yaml`, OpenCode local provider configuration, `AGENTS.md`, and `docs/architecture.md`.
+- Implemented: `local_llm/cache.py`, `local_llm/config.py`, `local_llm/registry.py`, `local_llm/downloader.py`, cache tests, config tests, registry tests, downloader tests, Docker artifacts, `local_llm.yaml`, OpenCode local provider configuration, `AGENTS.md`, and `docs/architecture.md`.
 - Decisions closed: `ASSUMPTION-1`–`ASSUMPTION-16` are recorded in `docs/architecture.md`; closing a decision is not an implementation claim.
-- Pending: full FastAPI scaffold, downloader, preflight, runtime adapter, admin routes, and chat route integration.
-- Verified: `docker compose run --rm tests` passes all 24 cache, config, and registry tests inside the Miniconda container.
+- Pending: full FastAPI scaffold, preflight, runtime adapter, admin routes, and chat route integration.
+- Verified: `docker compose run --rm tests` passes all 27 cache, config, registry, and downloader tests inside the Miniconda container.
 
 ## Definition of done
 

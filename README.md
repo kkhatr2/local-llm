@@ -14,6 +14,7 @@ All development, testing, deployment, and operation must happen inside Docker co
 - `local_llm/cache.py` — implemented response cache.
 - `local_llm/config.py` — implemented configuration loader and immutable settings.
 - `local_llm/registry.py` — implemented in-memory model registry.
+- `local_llm/downloader.py` — implemented Hugging Face CLI downloader.
 - `tests/` — containerized test suite.
 - `AGENTS.md` — repository operating rules.
 - `docs/requirements.md` — approved requirements and acceptance criteria.
@@ -27,7 +28,7 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 24 cache, config, and registry tests and has been verified with this command.
+The full suite contains 27 cache, config, registry, and downloader tests and has been verified with this command.
 
 Configuration path: `LOCAL_LLM_CONFIG` selects the YAML file; an explicit path argument takes precedence, then the env var, then repo-root `local_llm.yaml`.
 
