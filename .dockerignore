@@ -2,6 +2,7 @@
 .gitignore
 .opencode/
 opencode.jsonc
+private.txt
 models/
 .cache/
 **/__pycache__/

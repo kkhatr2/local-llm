@@ -4,7 +4,7 @@ Status: **approved for MVP definition**. CompositionRoot (C1), ConfigLoader (C2)
 
 Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. All application modules and their tests pass inside the Docker test service, including the production ASGI entry point `local_llm.api:app` (`app = build_app()` in `local_llm/api.py`, built by `local_llm/composition.py` with FastAPI lifespan startup wiring). All future development, testing, deployment, and other execution must occur inside Docker containers only.
 
-Verification evidence: `docker compose run --rm tests` completed with `Ran 89 tests ... OK` (including composition tests); `docker compose --profile serve config` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), a read-only config mount, and local model/cache mounts; `git check-ignore -v models/ .cache/responses/` reports both paths as ignored. The real-model smoke test (criterion 28) **passed inside Docker** with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`, file `qwen2.5-coder-0.5b-instruct-q4_k_m.gguf`): `hf download` succeeded, startup reached `/health`, a chat request returned `200` with `acceptance ok`, and a repeat replayed the cached response. The downloaded weights and cache entries were removed after verification. API logs report per-model download status (`downloading model`, `model download complete`, or `model already present; skipping download`); this was verified in the API container. Contract tests still use a fake Hugging Face CLI and a fake Llama runtime. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
+Verification evidence: `docker compose run --rm tests` completed with `Ran 91 tests ... OK` (including composition and container-environment tests, and a prompt-output capture test); `docker compose --profile serve config --no-interpolate` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), `env_file` wiring for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`; `git check-ignore -v private.txt models/ .cache/responses/` reports all three paths as ignored. The real-model smoke test (criterion 28) **passed inside Docker with token-authenticated downloads** using `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`, file `qwen2.5-coder-0.5b-instruct-q4_k_m.gguf`): the API container reported `HF_TOKEN configured: True`, `hf download` succeeded without the unauthenticated warning, `/health` and `/v1/models` returned `200` from host loopback, and the chat endpoint returned `200` with content `I am Qwen.` for `what is your name, respond using minimal tokens?`. A repeat replayed the cached response; admin unload returned `200` and admin delete returned `204`. The downloaded weights and cache entries were removed after verification. API logs report per-model download status (`downloading model`, `model download complete`, or `model already present; skipping download`); this was verified in the API container. Contract tests still use a fake Hugging Face CLI and a fake Llama runtime. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
 
 ## Original request
 
@@ -138,7 +138,7 @@ A localhost-only API that:
 
 ## Deferred
 
-- Gated/private Hugging Face model support and `HF_TOKEN`.
+- Gated/private Hugging Face model support. `HF_TOKEN` is used only for faster, rate-limit-favored public downloads.
 - Asynchronous download job queue; MVP admin downloads may run synchronously with a timeout.
 - Cancellation endpoint.
 - Embeddings endpoint.
@@ -170,7 +170,7 @@ A localhost-only API that:
 Use four configuration layers:
 
 1. `local_llm.yaml` — source of truth for the local API server, model registry, llama.cpp defaults, resource thresholds, runtime options, and cache settings.
-2. `.env` — machine-specific overrides for container paths, host port, and environment selection. Because MVP supports public models only, no Hugging Face token should be needed or stored.
+2. `private.txt` — untracked `HF_TOKEN=<token>` file injected by Compose into `api`, `tests`, and `dev` for faster public downloads. The token is not needed for gated/private model access and never enters application code or CLI arguments.
 3. `Dockerfile` and `docker-compose.yml` — reproducible build, test, run, and deployment path using a pinned Miniconda base image.
 4. `opencode.jsonc` — one custom OpenAI-compatible provider per model alias, each pointing at that alias’s endpoint and declaring limits/options with supported V2 fields.
 
@@ -508,7 +508,7 @@ Each criterion has one observable behavior and an owning module.
 25. **[docs]** README shows how to set OpenCode’s custom provider `baseURL` to `http://127.0.0.1:8000/v1/models/{alias}`.
 26. **[docs]** README states clearly that the user is responsible for verifying model size before loading.
 27. **[tests]** Contract and integration tests using a fake Hugging Face CLI and fake Llama runtime pass inside the test container.
-28. **[verification]** A real-model smoke test is either recorded as passing inside Docker or explicitly marked skipped with reason. **Status: passed inside Docker.** Evidence: `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` downloaded with `hf`, API startup reached `/health`, `POST /v1/models/qwen25-coder-05b/chat/completions` returned `200` with content `acceptance ok`, and a repeated request replayed the cached response. Weights and cache entries were deleted after the test.
+28. **[verification]** A real-model smoke test is either recorded as passing inside Docker or explicitly marked skipped with reason. **Status: passed inside Docker with token-authenticated downloads.** Evidence: `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` downloaded with `hf` while `HF_TOKEN` from `private.txt` was configured, API startup reached `/health`, `GET /v1/models` returned `200`, and `POST /v1/models/qwen25-coder-05b/chat/completions` with `what is your name, respond using minimal tokens?` returned `200` with content `I am Qwen.` (usage 39/5/44). A repeated request replayed the cached response; admin unload returned `200` and admin delete returned `204`. Weights and cache entries were deleted after the test.
 29. **[cache]** A completed non-streaming response is written as one JSON file under `.cache/responses/`.
 30. **[cache]** Repeating the same normalized request returns the stored response without invoking the fake Llama runtime.
 31. **[cache]** Repeating the same request with a different sampling parameter does not return the first cached response.
@@ -521,9 +521,12 @@ Each criterion has one observable behavior and an owning module.
 38. **[llama-config]** Given a model-level or request-level llama option override, the effective value differs from the default and is the one passed to `Llama(...)`.
 39. **[opencode]** OpenCode model entries use `limit` singular and `body.options`; no `limits` or top-level `options` keys are present.
 40. **[docker]** `docker compose run --rm tests` runs the full test suite in the Miniconda container.
-41. **[docker]** `docker compose --profile serve up -d api` starts the API container with `models/` and `.cache/responses/` mounted as persistent volumes. **Status: verified with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container.**
+41. **[docker]** `docker compose --profile serve up -d api` starts the API container with `models/` and `.cache/responses/` mounted as persistent volumes. **Status: verified with placeholder GGUF files (`/health` returned `{"status":"ok"}`) and with the real token-authenticated model smoke (all HTTP endpoints reachable from `127.0.0.1:8000`).**
 42. **[docker]** No development or verification step in the runbook invokes host Python or host conda.
 43. **[generation-config]** Given default OpenCode and YAML config, generation uses `temperature: 0.1`, `top_p: 0.2`, `top_k: 20`, `min_p: 0.08`, and `repeat_penalty: 1.1`.
+44. **[security/token]** The untracked `private.txt` file supplies `HF_TOKEN` to the `api`, `tests`, and `dev` Compose services through `env_file`; the token is never passed as a CLI argument, copied into the image, or logged. **Status: verified** by Compose config, the container-environment test, and an authenticated real-model smoke.
+45. **[tests]** A test captures the model output for the prompt `what is your name, respond using minimal tokens?`. **Status: passed** as a contract test with the injected fake runtime; the same prompt was also sent to the real Qwen model during the Docker smoke.
+46. **[docker]** The API endpoints are reachable from the host loopback address: `GET /health`, `GET /v1/models`, and `POST /v1/models/{alias}/chat/completions`. **Status: verified** with the real-model smoke inside Docker.
 
 ## Delivery sequence
 

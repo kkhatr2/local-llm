@@ -23,7 +23,7 @@ There are **14 modeled components**:
 | C8 | AdminRoutes | Application | Implemented | Exposes runtime add, unload, and remove operations. |
 | C9 | ResponseCache | Application | Implemented | Stores completed responses, keys full normalized requests, evicts by TTL/size, and replays SSE. |
 | C10 | ErrorMapper | Application | Implemented | Converts config, download, preflight, runtime, and validation failures into stable HTTP errors. |
-| C11 | DockerRuntime | Boundary | Implemented as files | Builds and runs the Miniconda image; publishes container port only on host loopback. |
+| C11 | DockerRuntime | Boundary | Implemented as files | Builds and runs the Miniconda image, injects `HF_TOKEN` from `private.txt` via Compose `env_file`, and publishes the container port only on host loopback. |
 | C12 | OpenCodeClient | Boundary | Implemented as config | Calls each alias-specific OpenAI-compatible endpoint using `limit` and `body.options`. |
 | C13 | HuggingFaceCli | Boundary | External | Performs public model downloads inside the container. |
 | C14 | LlamaCppLibrary | Boundary | External dependency | Provides `Llama(...)`, `create_chat_completion`, and streaming generation on CPU. |
@@ -208,7 +208,7 @@ classDiagram
 | C8 AdminRoutes | Add/unload/remove requests | Registers new models, unloads current instances, and removes aliases. | Updated registry state. | Invalid aliases or failed downloads return stable errors. |
 | C9 ResponseCache | Cache key and completed response | Hashes canonical request data, writes atomically, expires and evicts entries, replays SSE. | Cached response or cache miss. | Corrupt or expired entries are deleted and treated as misses. |
 | C10 ErrorMapper | Domain and runtime exceptions | Converts exceptions to stable HTTP status codes and sanitized envelopes. | HTTP error response. | Preserves safe cause metadata without leaking paths or stack traces. |
-| C11 DockerRuntime | Dockerfile, Compose file, volumes | Builds Miniconda image, mounts `models/` and `.cache/`, publishes only host loopback. | Containerized test/dev/API environments. | Invalid Compose config fails before deployment. |
+| C11 DockerRuntime | Dockerfile, Compose file, volumes, `private.txt` | Builds Miniconda image, injects `HF_TOKEN` into `api`/`tests`/`dev`, mounts `models/` and `.cache/`, and publishes only host loopback. | Containerized test/dev/API environments. | Invalid Compose config or missing `private.txt` fails before deployment. |
 | C12 OpenCodeClient | `opencode.jsonc` providers | Sends chat requests to alias-specific base URLs with `limit` and `body.options`. | Selectable local models. | Missing server appears as provider/model unavailable. |
 | C13 HuggingFaceCli | Public repo ID, filename, revision | Downloads exact GGUF file to `models/<alias>/`. | Files on mounted volume. | Auth, gated, or network failures propagate to C4. |
 | C14 LlamaCppLibrary | GGUF path and llama options | Performs CPU inference and streaming generation. | Completion chunks or full response. | Load or generation errors propagate to C6. |
@@ -289,6 +289,7 @@ flowchart TB
     ModelsVol[("bind mount ./models")]
     CacheVol[("bind mount ./.cache/responses")]
     ConfigFile[("read-only ./local_llm.yaml")]
+    TokenFile[("private.txt -> HF_TOKEN env via Compose env_file")]
     OC["OpenCode"]
 
     Host --> Loop
@@ -299,6 +300,7 @@ flowchart TB
     Uvicorn --> ModelsVol
     Uvicorn --> CacheVol
     Uvicorn --> ConfigFile
+    TokenFile --> Container
 ```
 
 ## Dependency rules
@@ -311,17 +313,18 @@ flowchart TB
 - Cache keys include request `options`; changing `n_ctx`, `n_batch`, `flash_attn`, `temperature`, `top_p`, `top_k`, `min_p`, or `repeat_penalty` produces a different key.
 - `make_cache_key` receives a validated alias from the registry and a fingerprint from `weight_fingerprint`; both are non-empty by contract and are not re-checked inside the cache.
 - No component reads host Python or host conda state.
+- `HF_TOKEN` is injected by C11 from `private.txt` into the container environment; C4/C13 never receive it as a CLI argument and no component logs its value.
 - All persistent state is through the two mounted volumes and the read-only config file.
 
 ## Verified and unverified
 
-- Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary. `docker compose --profile serve config` confirms the API command `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, loopback-only host publishing (`host_ip: 127.0.0.1`, `published: "8000"`, `target: 8000`), a read-only config mount, and local model/cache mounts.
+- Verified: `docker compose config` and `docker compose --profile serve config --no-interpolate` parse successfully with the provided Docker Compose binary. The no-interpolate form confirms the API command `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, loopback-only host publishing (`host_ip: 127.0.0.1`, `published: "8000"`, `target: 8000`), `env_file` wiring for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`.
 - Verified: the production ASGI entry point `local_llm.api:app` is exposed as `app = build_app()` in `local_llm/api.py`; `local_llm/composition.py` uses FastAPI lifespan startup wiring and no deprecated `on_event` hook.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 89 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests.
+- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 91 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, and container-environment tests, including capture of the model output for `what is your name, respond using minimal tokens?`.
 - Verified: `docker compose --profile serve up -d api` started the API container with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container and logs showed per-model download-skip status.
-- Verified: `git check-ignore -v models/ .cache/responses/` reports `.gitignore:2:models/` and `.gitignore:3:.cache/`.
+- Verified: `git check-ignore -v private.txt models/ .cache/responses/` reports `.gitignore:5:private.txt`, `.gitignore:2:models/`, and `.gitignore:3:.cache/`; `.dockerignore` also excludes `private.txt` from the image build context.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
-- Verified: a real-model smoke test passed inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`). `hf download` restored the GGUF, startup reached `/health`, chat returned `200`, and a repeat replayed the cached response; weights and cache entries were removed afterward.
+- Verified: a token-authenticated real-model smoke test passed inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`). The API container reported `HF_TOKEN configured: True` and `hf download` restored the GGUF without the unauthenticated warning. From host loopback, `/health`, `/v1/models`, and the chat endpoint returned `200`; the prompt `what is your name, respond using minimal tokens?` produced `I am Qwen.`. A repeat replayed the cached response, admin unload returned `200`, admin delete returned `204`, and weights/cache entries were removed afterward.
 - Contract tests use a fake Hugging Face CLI and a fake Llama runtime. SSE replay reconstructs frames from stored complete responses by design; it is not true incremental streaming generation.
 - No application components are pending for MVP. C13 and C14 are external boundaries; `ASSUMPTION-16` (committed dependency lock file) remains deferred and non-MVP.
 

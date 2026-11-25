@@ -55,6 +55,7 @@ class _FakeRuntime:
         self.unload_calls = 0
         self.loaded = False
         self.fail_chat = False
+        self.content_override = None
 
     def load(self, model_path, options) -> None:
         self.load_calls.append((Path(model_path), deepcopy(options)))
@@ -65,7 +66,10 @@ class _FakeRuntime:
         if self.fail_chat:
             raise RuntimeError("runtime exploded /private/path")
         temperature = request.get("temperature")
-        content = "hello" if temperature is None else f"temp={temperature}"
+        if self.content_override is not None:
+            content = self.content_override
+        else:
+            content = "hello" if temperature is None else f"temp={temperature}"
         return {
             "id": "chatcmpl-test",
             "object": "chat.completion",
@@ -194,6 +198,23 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertFalse(self.runtime.loaded)
         self.assertEqual(len(self.preflight.load_calls), 1)
         self.assertEqual(len(self._cache_files()), 1)
+
+    def test_captures_model_output_for_name_prompt(self) -> None:
+        prompt = "what is your name, respond using minimal tokens?"
+        self.runtime.content_override = "Qwen"
+
+        response = self.client.post(
+            self._url(),
+            json={"messages": [{"role": "user", "content": prompt}]},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.runtime.chat_calls[0]["messages"][0]["content"], prompt
+        )
+        content = response.json()["choices"][0]["message"]["content"]
+        self.assertEqual(content, "Qwen")
+        self.assertLessEqual(len(content.split()), 3)
 
     def test_repeated_request_returns_cache_without_runtime(self) -> None:
         first = self.client.post(self._url(), json=self.body)

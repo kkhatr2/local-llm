@@ -1,6 +1,6 @@
 # API operator runbook
 
-Status: **implemented HTTP contract; external boundaries exercised by a real-model smoke test**. Request/response shapes and status codes below are derived from the route code (`local_llm/chat_routes.py`, `local_llm/admin_routes.py`), error mapping (`local_llm/error_mapper.py`, `local_llm/composition.py`), and Compose config (`docker-compose.yml`). Contract tests use a fake Hugging Face CLI and a fake Llama runtime. A real `hf` download and real GGUF CPU inference were verified inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF`; the weights and cache entries were removed afterward.
+Status: **implemented HTTP contract; external boundaries exercised by a token-authenticated real-model smoke test**. Request/response shapes and status codes below are derived from the route code (`local_llm/chat_routes.py`, `local_llm/admin_routes.py`), error mapping (`local_llm/error_mapper.py`, `local_llm/composition.py`), and Compose config (`docker-compose.yml`). Contract tests use a fake Hugging Face CLI and a fake Llama runtime. A real `hf` download and real GGUF CPU inference were verified inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` using `HF_TOKEN` injected from `private.txt`; the weights and cache entries were removed afterward.
 
 Authoritative scope: `docs/requirements.md`. Component/design detail: `docs/architecture.md`. Runtime settings: `local_llm.yaml`.
 
@@ -10,8 +10,9 @@ All development, testing, deployment, and verification run inside Docker. Do not
 
 ```powershell
 # 1. Validate the serve profile before deploying.
-#    Check the api command, loopback-only publish, and read-only config mount.
-docker compose --profile serve config
+#    Check the api command, loopback-only publish, env_file, and read-only config mount.
+#    Use --no-interpolate so the resolved HF_TOKEN is not printed into shared logs.
+docker compose --profile serve config --no-interpolate
 
 # 2. Start the API in the background.
 docker compose --profile serve up -d api
@@ -37,6 +38,15 @@ Mounts and persistence:
 | `models/` | bind-mounted into the container; GGUF weights land in `models/<alias>/` | gitignored — never commit weights |
 | `.cache/` | bind-mounted; completed responses in `.cache/responses/` | gitignored — never commit cache files |
 | `local_llm.yaml` | mounted read-only (`:ro`) | committed config |
+| `private.txt` | read by Compose as `env_file`; not copied into the image | gitignored — never commit the token |
+
+Create `private.txt` at the repository root with one line before running Compose:
+
+```text
+HF_TOKEN=<token>
+```
+
+`docker-compose.yml` injects that value as `HF_TOKEN` into the `api`, `tests`, and `dev` services. The file is required, so Compose fails fast when it is missing. `hf` and `huggingface_hub` read the variable automatically for authenticated, rate-limit-favored public downloads. The token is never passed as a CLI argument, baked into the image, or written to logs.
 
 Enabled models from `local_llm.yaml` are downloaded at startup by the app lifespan. A missing GGUF on a later request is restored on demand (see chat completions below).
 
@@ -262,5 +272,5 @@ Purpose: unregister an alias without deleting its weights or changing the runnin
 
 ## Verification status
 
-- Verified inside Docker: contract tests for every route above, including cache hit/miss, SSE replay, 404/409/422/503/502 mappings, and lazy load/unload, via `docker compose run --rm tests`. Compose serve config confirms the loopback-only publish and read-only config mount.
-- Verified: a real-model smoke test inside Docker downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` with `hf`, started the API, returned `200` from the chat endpoint, and replayed the cached response on repeat. The downloaded weights and cache entries were removed afterward. Contract tests continue to use fakes.
+- Verified inside Docker: all 91 contract tests via `docker compose run --rm tests`, including every route above, cache hit/miss, SSE replay, 404/409/422/503/502 mappings, lazy load/unload, the container-environment token check, and capture of the model output for `what is your name, respond using minimal tokens?`. `docker compose --profile serve config --no-interpolate` confirms the loopback-only publish, `env_file`, and read-only config mount.
+- Verified: a token-authenticated real-model smoke test inside Docker downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` with `hf` without the unauthenticated warning. From host loopback, `GET /health`, `GET /v1/models`, and `POST /v1/models/qwen25-coder-05b/chat/completions` returned `200`; the prompt `what is your name, respond using minimal tokens?` produced `I am Qwen.`. A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Weights and cache entries were removed afterward. Contract tests continue to use fakes.

@@ -11,6 +11,7 @@ All development, testing, deployment, and operation must happen inside Docker co
 - `Dockerfile` — Miniconda-based image.
 - `docker-compose.yml` — test, dev shell, and API services.
 - `opencode.jsonc` — OpenCode providers for the local models.
+- `private.txt` — untracked `HF_TOKEN=<token>` file injected into every Compose service for faster public-model downloads.
 - `local_llm/cache.py` — implemented response cache.
 - `local_llm/config.py` — implemented configuration loader and immutable settings.
 - `local_llm/registry.py` — implemented in-memory model registry.
@@ -36,7 +37,9 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 89 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests and has been verified with this command.
+The full suite contains 91 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, and container-environment tests and has been verified with this command. It includes a test that captures the model output for `what is your name, respond using minimal tokens?`.
+
+`docker-compose.yml` injects `HF_TOKEN` from the untracked `private.txt` into the `api`, `tests`, and `dev` services. Compose fails fast if the file is missing. `hf` and `huggingface_hub` read this variable automatically, so no token is passed on the command line or written to application code.
 
 Configuration path: `LOCAL_LLM_CONFIG` selects the YAML file; an explicit path argument takes precedence, then the env var, then repo-root `local_llm.yaml`.
 
@@ -159,6 +162,6 @@ After editing OpenCode configuration, use `/reload` if the change is not picked 
 
 ## Verification evidence
 
-- `docker compose run --rm tests` passes all 89 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests inside the Miniconda container.
-- `docker compose --profile serve config` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, and the host publish is loopback-only (`127.0.0.1:8000`), with a read-only config mount and local `models/` and `.cache/responses/` mounts. `docker compose --profile serve up -d api` was smoke-tested with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container. `git check-ignore -v models/ .cache/responses/` confirms both paths are ignored.
-- Real-model smoke test: **passed inside Docker**. `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`) downloaded with `hf`, startup reached `/health`, chat returned `200` with `acceptance ok`, and a repeat replayed the cached response. Downloaded weights and cache entries were removed after the test. Contract tests still use a fake Hugging Face CLI and fake Llama runtime; cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
+- `docker compose run --rm tests` passes all 91 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, and container-environment tests inside the Miniconda container.
+- `docker compose --profile serve config --no-interpolate` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, the host publish is loopback-only (`127.0.0.1:8000`), `env_file` is present for `api`, `tests`, and `dev`, and the config mount is read-only. Use `--no-interpolate` when sharing config output because plain `docker compose config` resolves and prints `HF_TOKEN`. `git check-ignore -v private.txt models/ .cache/responses/` confirms all three paths are ignored.
+- Real-model smoke test: **passed inside Docker with token-authenticated downloads**. The API container reported `HF_TOKEN configured: True`, and `hf` downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` without the unauthenticated-request warning. From the host loopback, `GET /health` and `GET /v1/models` returned `200`; `POST /v1/models/qwen25-coder-05b/chat/completions` with `what is your name, respond using minimal tokens?` returned `200` with content `I am Qwen.` (usage 39/5/44). A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Downloaded weights and cache entries were removed afterward. Contract tests still use a fake Hugging Face CLI and fake Llama runtime; cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.

@@ -2,6 +2,7 @@
 models/
 .cache/
 .env
+private.txt
 __pycache__/
 *.py[cod]
 .pytest_cache/
