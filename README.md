@@ -18,6 +18,7 @@ All development, testing, deployment, and operation must happen inside Docker co
 - `local_llm/preflight.py` — implemented fail-closed resource checks.
 - `local_llm/runtime.py` — implemented lazy llama.cpp runtime adapter.
 - `local_llm/chat_routes.py` — implemented health, model-list, and chat completion routes.
+- `local_llm/admin_routes.py` — implemented runtime add, unload, and remove routes.
 - `local_llm/composition.py` — injectable FastAPI app builder and stable error handlers.
 - `local_llm/error_mapper.py` — implemented sanitized HTTP error envelopes.
 - `tests/` — containerized test suite.
@@ -33,7 +34,7 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 73 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, and chat-route tests and has been verified with this command.
+The full suite contains 83 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, and admin-route tests and has been verified with this command.
 
 Configuration path: `LOCAL_LLM_CONFIG` selects the YAML file; an explicit path argument takes precedence, then the env var, then repo-root `local_llm.yaml`.
 
@@ -68,6 +69,17 @@ docker compose --profile serve down
 ```
 
 The container listens on `0.0.0.0:8000` internally so Docker can publish it. Compose publishes only to `127.0.0.1:8000` on the host.
+
+## API routes
+
+- `GET /health` — liveness check that does not load a model.
+- `GET /v1/models` — registered aliases in OpenAI-compatible model-list shape.
+- `POST /v1/models/{alias}/chat/completions` — JSON or SSE chat completion for one alias.
+- `POST /admin/models` — download and register a public GGUF model at runtime.
+- `POST /admin/models/{alias}/unload` — unload that alias's in-memory instance; no-op if not loaded.
+- `DELETE /admin/models/{alias}` — unregister the alias without rewriting `local_llm.yaml`.
+
+Runtime-added aliases are ephemeral; copy a desired entry into `local_llm.yaml` to make it permanent.
 
 ## Model configuration
 

@@ -20,7 +20,7 @@ There are **14 modeled components**:
 | C5 | ResourcePreflight | Application | Implemented | Checks disk and memory estimates and fails closed before download or load. |
 | C6 | LlamaRuntimeAdapter | Application | Implemented | Loads a GGUF with merged llama options, generates completions, and unloads after response. |
 | C7 | ChatRoutes | Application | Implemented | Exposes `/health`, `/v1/models`, and `/v1/models/{alias}/chat/completions`. |
-| C8 | AdminRoutes | Application | Planned | Exposes runtime add, unload, and remove operations. |
+| C8 | AdminRoutes | Application | Implemented | Exposes runtime add, unload, and remove operations. |
 | C9 | ResponseCache | Application | Implemented | Stores completed responses, keys full normalized requests, evicts by TTL/size, and replays SSE. |
 | C10 | ErrorMapper | Application | Implemented | Converts config, download, preflight, runtime, and validation failures into stable HTTP errors. |
 | C11 | DockerRuntime | Boundary | Implemented as files | Builds and runs the Miniconda image; publishes container port only on host loopback. |
@@ -317,9 +317,9 @@ flowchart TB
 ## Verified and unverified
 
 - Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 73 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, and chat-route tests.
+- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 83 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, and admin-route tests.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
-- Pending: C8 admin routes and C1 production composition root/FastAPI entry point.
+- Pending: C1 production composition root/FastAPI entry point.
 
 ## Closed implementation assumptions
 
