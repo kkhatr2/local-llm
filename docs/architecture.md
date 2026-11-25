@@ -19,7 +19,7 @@ There are **14 modeled components**:
 | C4 | HfCliDownloader | Application | Implemented | Invokes `huggingface-cli download`, writes into `models/<alias>/`, and verifies the GGUF file. |
 | C5 | ResourcePreflight | Application | Implemented | Checks disk and memory estimates and fails closed before download or load. |
 | C6 | LlamaRuntimeAdapter | Application | Implemented | Loads a GGUF with merged llama options, generates completions, and unloads after response. |
-| C7 | ChatRoutes | Application | Planned | Exposes `/health`, `/v1/models`, and `/v1/models/{alias}/chat/completions`. |
+| C7 | ChatRoutes | Application | Implemented | Exposes `/health`, `/v1/models`, and `/v1/models/{alias}/chat/completions`. |
 | C8 | AdminRoutes | Application | Planned | Exposes runtime add, unload, and remove operations. |
 | C9 | ResponseCache | Application | Implemented | Stores completed responses, keys full normalized requests, evicts by TTL/size, and replays SSE. |
 | C10 | ErrorMapper | Application | Implemented | Converts config, download, preflight, runtime, and validation failures into stable HTTP errors. |
@@ -317,9 +317,9 @@ flowchart TB
 ## Verified and unverified
 
 - Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, and error-mapping tests.
+- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 73 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, and chat-route tests.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
-- Pending: API scaffold and integration of C1–C8 and C10 into the containerized service.
+- Pending: C8 admin routes and C1 production composition root/FastAPI entry point.
 
 ## Closed implementation assumptions
 

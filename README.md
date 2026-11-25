@@ -17,6 +17,8 @@ All development, testing, deployment, and operation must happen inside Docker co
 - `local_llm/downloader.py` — implemented Hugging Face CLI downloader.
 - `local_llm/preflight.py` — implemented fail-closed resource checks.
 - `local_llm/runtime.py` — implemented lazy llama.cpp runtime adapter.
+- `local_llm/chat_routes.py` — implemented health, model-list, and chat completion routes.
+- `local_llm/composition.py` — injectable FastAPI app builder and stable error handlers.
 - `local_llm/error_mapper.py` — implemented sanitized HTTP error envelopes.
 - `tests/` — containerized test suite.
 - `AGENTS.md` — repository operating rules.
@@ -31,7 +33,7 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 60 cache, config, registry, downloader, resource-preflight, runtime, and error-mapping tests and has been verified with this command.
+The full suite contains 73 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, and chat-route tests and has been verified with this command.
 
 Configuration path: `LOCAL_LLM_CONFIG` selects the YAML file; an explicit path argument takes precedence, then the env var, then repo-root `local_llm.yaml`.
 

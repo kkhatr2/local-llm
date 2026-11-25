@@ -42,10 +42,10 @@ If these documents disagree with implementation comments, update the documents f
 
 ## Current state
 
-- Implemented: `local_llm/cache.py`, `local_llm/config.py`, `local_llm/registry.py`, `local_llm/downloader.py`, `local_llm/preflight.py`, `local_llm/runtime.py`, `local_llm/error_mapper.py`, cache tests, config tests, registry tests, downloader tests, resource-preflight tests, runtime tests, error-mapping tests, Docker artifacts, `local_llm.yaml`, OpenCode local provider configuration, `AGENTS.md`, and `docs/architecture.md`.
+- Implemented: `local_llm/cache.py`, `local_llm/config.py`, `local_llm/registry.py`, `local_llm/downloader.py`, `local_llm/preflight.py`, `local_llm/runtime.py`, `local_llm/error_mapper.py`, `local_llm/chat_routes.py`, `local_llm/composition.py`, cache tests, config tests, registry tests, downloader tests, resource-preflight tests, runtime tests, error-mapping tests, chat-route tests, Docker artifacts, `local_llm.yaml`, OpenCode local provider configuration, `AGENTS.md`, and `docs/architecture.md`.
 - Decisions closed: `ASSUMPTION-1`–`ASSUMPTION-16` are recorded in `docs/architecture.md`; closing a decision is not an implementation claim.
-- Pending: full FastAPI scaffold, admin routes, and chat route integration.
-- Verified: `docker compose run --rm tests` passes all 60 cache, config, registry, downloader, resource-preflight, runtime, and error-mapping tests inside the Miniconda container.
+- Pending: C8 admin routes and C1 production composition root/FastAPI entry point.
+- Verified: `docker compose run --rm tests` passes all 73 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, and chat-route tests inside the Miniconda container.
 
 ## Definition of done
 
