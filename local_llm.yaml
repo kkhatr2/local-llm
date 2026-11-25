@@ -57,7 +57,7 @@ models:
       flash_attn: true
       n_threads: 8
 
-  - alias: qwen2.5-coder-3b
+  - alias: qwen25-coder-3b
     enabled: true
     repo_id: Qwen/Qwen2.5-Coder-3B-Instruct-GGUF
     filename: qwen2.5-coder-3b-instruct-q4_k_m.gguf

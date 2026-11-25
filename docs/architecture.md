@@ -14,7 +14,7 @@ There are **14 modeled components**:
 | ID | Component | Kind | Status | Responsibility |
 | --- | --- | --- | --- | --- |
 | C1 | CompositionRoot | Application | Planned | Constructs concrete settings, clients, stores, clocks, and runtimes; owns startup wiring. |
-| C2 | ConfigLoader | Application | Planned | Reads `local_llm.yaml`, validates fields, merges defaults, and produces immutable settings. |
+| C2 | ConfigLoader | Application | Implemented | Reads `local_llm.yaml`, validates fields, merges defaults, and produces immutable settings. |
 | C3 | ModelRegistry | Application | Planned | Tracks aliases, repo IDs, filenames, revisions, options, and registered/downloaded state. |
 | C4 | HfCliDownloader | Application | Planned | Invokes `huggingface-cli download`, writes into `models/<alias>/`, and verifies the GGUF file. |
 | C5 | ResourcePreflight | Application | Planned | Checks disk and memory estimates and fails closed before download or load. |
@@ -309,6 +309,29 @@ flowchart TB
 ## Verified and unverified
 
 - Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 9 response-cache tests (`Ran 9 tests ... OK`).
+- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all response-cache and config-loader tests.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
 - Pending: API scaffold and integration of C1–C8 and C10 into the containerized service.
+
+## Closed implementation assumptions
+
+The tech lead closed `ASSUMPTION-1` through `ASSUMPTION-16`. Closing a decision does not change component status; the "Component count" table remains the only status source of truth.
+
+| ID | Closed decision | Component(s) |
+| --- | --- | --- |
+| `ASSUMPTION-1` | Config is repo-root `local_llm.yaml`; `LOCAL_LLM_CONFIG` overrides, explicit path wins. Alias `^[a-z0-9_-]+$`; `repo_id` is `owner/name`; `filename` is a `.gguf` basename; duplicate aliases rejected. | C2 |
+| `ASSUMPTION-2` | Container binds `0.0.0.0:8000`; Compose publishes only host `127.0.0.1:8000`. | C11 |
+| `ASSUMPTION-3` | `POST /admin/models`, `POST /admin/models/{alias}/unload`, `DELETE /admin/models/{alias}`. `DELETE` unregisters only: `204` success, `404` unknown; `unload` is a no-op when not loaded. | C8 |
+| `ASSUMPTION-4` | Disk free `>= min_free_disk_gb + reserve_disk_gb`. RAM estimate is GGUF file size; available RAM from `/proc/meminfo` `MemAvailable` with `os.sysconf` fallback; read failure fails closed. | C5 |
+| `ASSUMPTION-5` | No auth in MVP; loopback-only host publish is the control. | C11 boundary; C7/C8 |
+| `ASSUMPTION-6` | `{command} download {repo_id} {filename} --revision {revision} --local-dir models/<alias>`. Public check before download; runner and repo-info injected; skip non-empty existing file. | C4 |
+| `ASSUMPTION-7` | One process-wide lock, 30 s timeout, `503` on contention. | C7 / C6 |
+| `ASSUMPTION-8` | Streaming unload in `try/finally`; cache `put` after full response assembly; no cache on error. | C6 / C7 / C9 |
+| `ASSUMPTION-9` | Runtime aliases are ephemeral; server never rewrites `local_llm.yaml`. | C8 |
+| `ASSUMPTION-10` | One OpenCode provider per alias. | C12 |
+| `ASSUMPTION-11` | Cache key is SHA-256 of `canonical_json`; fingerprint `size:mtime_ns`; exclude `stream`, `stream_options`, `request_id`, `verbose`. | C9 |
+| `ASSUMPTION-12` | Cache defaults `ttl_days: 30`, `max_size_mb: 1024`. | C9 / `local_llm.yaml` |
+| `ASSUMPTION-13` | SSE replay reconstructs frames from the stored complete response; raw chunk bytes are not stored. | C9 |
+| `ASSUMPTION-14` | `flash_attn` is passed as configured; runtime rejection maps to a sanitized `502`. | C6 / C10 |
+| `ASSUMPTION-15` | Chat accepts OpenAI fields plus `options`. Load merge: `llama_defaults` → model `options` → request `options`. Sampling merge: `generation_defaults` → model `options` sampling keys → request top-level fields → request `options` sampling keys. | C6 / C7 |
+| `ASSUMPTION-16` | No committed lock file yet; generate it from inside Docker before production deployment. | C11 boundary (deferred) |

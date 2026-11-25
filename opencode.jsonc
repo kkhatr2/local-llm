@@ -89,7 +89,7 @@
       "name": "Local Qwen Coder",
       "package": "@opencode/ai/providers/openai-compatible",
       "settings": {
-        "baseURL": "http://127.0.0.1:8000/v1/models/qwen2.5-coder-3b",
+        "baseURL": "http://127.0.0.1:8000/v1/models/qwen25-coder-3b",
         "headerTimeout": 600000,
         "chunkTimeout": 600000,
         "timeout": 1800000,
@@ -101,7 +101,7 @@
       "models": {
         "chat": {
           "name": "Qwen 2.5 Coder 3B CPU",
-          "modelID": "qwen2.5-coder-3b",
+          "modelID": "qwen25-coder-3b",
           "limit": {
             "context": 16384,
             "output": 512,

@@ -1,8 +1,8 @@
 # Local LLM API requirements
 
-Status: **approved for MVP definition**. No product-level blockers remain. Implementation handoff still requires the tech lead to close the implementation-owned assumptions listed below.
+Status: **approved for MVP definition**. ConfigLoader is implemented and tested. No product-level blockers remain. Implementation handoff still requires the tech lead to close the implementation-owned assumptions listed below.
 
-Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. The response-cache module and its tests are implemented and now pass inside the Docker test service; the full API scaffold is still pending. All future development, testing, deployment, and other execution must occur inside Docker containers only. Compose configuration was validated with the provided Docker Compose binary, and `docker compose run --rm tests` completed with `Ran 9 tests ... OK`.
+Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. The response-cache module and its tests are implemented and now pass inside the Docker test service; the full API scaffold is still pending. All future development, testing, deployment, and other execution must occur inside Docker containers only. Compose configuration was validated with the provided Docker Compose binary, and `docker compose run --rm tests` completed with `Ran 16 tests ... OK`.
 
 ## Original request
 
@@ -236,7 +236,7 @@ models:
       flash_attn: true
       n_threads: 8
 
-  - alias: qwen2.5-coder-3b
+  - alias: qwen25-coder-3b
     enabled: true
     repo_id: Qwen/Qwen2.5-Coder-3B-Instruct-GGUF
     filename: qwen2.5-coder-3b-instruct-q4_k_m.gguf
@@ -264,7 +264,7 @@ Effective llama.cpp settings are produced by merging, in order:
 - `llama_defaults.n_ctx`: must be positive and no greater than `max_n_ctx`.
 - `llama_defaults.n_batch`: must be positive.
 - `llama_defaults.flash_attn`: must be boolean.
-- Model `options` may override only supported llama.cpp load fields.
+- Model `options` may override only supported llama.cpp load or sampling fields.
 - `runtime.n_threads`: must be positive and no greater than the container’s logical CPU count.
 - Resource thresholds must be positive numbers.
 - `cache.enabled`, `cache.ttl_days`, `cache.max_size_mb`, and `cache.replay_sse` must be valid typed values.
@@ -443,26 +443,26 @@ The image is built from a pinned Miniconda base image and creates the `local-llm
 
 ## Assumptions needing implementation decisions
 
-These are not product blockers, but the tech lead must close them before implementation starts.
+These product-level assumptions were closed by the tech lead. The concrete decisions are recorded in `docs/architecture.md` under "Closed implementation assumptions"; closing a decision does not change component status.
 
-| ID | Assumption | Owner | Required decision |
+| ID | Assumption | Owner | Decision |
 | --- | --- | --- | --- |
-| `ASSUMPTION-1` | Config lives in a repo-root YAML file with env overrides. | Tech Lead | Confirm filename/schema and alias validation rules. |
-| `ASSUMPTION-2` | Inside Docker the app binds `0.0.0.0:8000`; Compose publishes only to host `127.0.0.1:8000`. | Tech Lead | Confirm container binding model. |
-| `ASSUMPTION-3` | Admin route names will be `POST /admin/models`, `POST /admin/models/{alias}/unload`, and `DELETE /admin/models/{alias}`. | Tech Lead | Confirm route names and delete semantics. |
-| `ASSUMPTION-4` | Resource thresholds are configurable with safe defaults. | Tech Lead | Define RAM/disk estimation formula and defaults. |
-| `ASSUMPTION-5` | Admin endpoints require no auth because the host publish is loopback-only. | Tech Lead + Security Engineer | Confirm or require a local token. |
-| `ASSUMPTION-6` | HF CLI invocation uses `huggingface-cli download` with `--local-dir`; revision/filename are passed when configured. | Tech Lead | Confirm exact command, timeout, and failure parsing. |
-| `ASSUMPTION-7` | Generation requests are globally serialized because models are loaded/unloaded per request. | Tech Lead | Confirm locking model and 429/503 behavior for contention. |
-| `ASSUMPTION-8` | “Unload after response” means after the final token for streaming responses. | Tech Lead | Confirm cleanup hook placement. |
-| `ASSUMPTION-9` | Runtime-added aliases are ephemeral unless copied into YAML. | Tech Lead | Confirm no config auto-rewrite in MVP. |
-| `ASSUMPTION-10` | OpenCode integration uses one custom provider per alias. | Tech Lead | Confirm this is the documented MVP pattern. |
-| `ASSUMPTION-11` | Cache keys use canonical JSON plus SHA-256 as described above. | Tech Lead | Confirm exact canonicalization and weight fingerprint. |
-| `ASSUMPTION-12` | Default cache limits are 30 days and 1024 MB. | Tech Lead | Confirm defaults are safe for the local CPU environment. |
-| `ASSUMPTION-13` | SSE replay reconstructs chunks from the stored complete response rather than storing raw chunk bytes. | Tech Lead | Confirm replay format is accepted by OpenCode. |
-| `ASSUMPTION-14` | The installed `llama-cpp-python` version supports `flash_attn`. | Tech Lead | Pin a compatible version or reject the option at load time. |
-| `ASSUMPTION-15` | OpenCode sends runtime llama options through `body.options`. | Tech Lead | Confirm the API accepts and validates this request field. |
-| `ASSUMPTION-16` | Miniconda base image plus `environment.yaml` is sufficient until a committed lock file is generated. | Tech Lead + Delivery Manager | Generate a lock file from inside Docker before production deployment. |
+| `ASSUMPTION-1` | Config lives in a repo-root YAML file with env overrides. | Tech Lead | Closed by ConfigLoader implementation. |
+| `ASSUMPTION-2` | Inside Docker the app binds `0.0.0.0:8000`; Compose publishes only to host `127.0.0.1:8000`. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-3` | Admin route names will be `POST /admin/models`, `POST /admin/models/{alias}/unload`, and `DELETE /admin/models/{alias}`. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-4` | Resource thresholds are configurable with safe defaults. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-5` | Admin endpoints require no auth because the host publish is loopback-only. | Tech Lead + Security Engineer | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-6` | HF CLI invocation uses `huggingface-cli download` with `--local-dir`; revision/filename are passed when configured. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-7` | Generation requests are globally serialized because models are loaded/unloaded per request. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-8` | “Unload after response” means after the final token for streaming responses. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-9` | Runtime-added aliases are ephemeral unless copied into YAML. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-10` | OpenCode integration uses one custom provider per alias. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-11` | Cache keys use canonical JSON plus SHA-256 as described above. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-12` | Default cache limits are 30 days and 1024 MB. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-13` | SSE replay reconstructs chunks from the stored complete response rather than storing raw chunk bytes. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-14` | The installed `llama-cpp-python` version supports `flash_attn`. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-15` | OpenCode sends runtime llama options through `body.options`. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-16` | Miniconda base image plus `environment.yaml` is sufficient until a committed lock file is generated. | Tech Lead + Delivery Manager | Closed; see `docs/architecture.md`. |
 
 ## Acceptance criteria
 

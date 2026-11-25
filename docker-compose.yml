@@ -30,6 +30,8 @@ services:
       PYTHONPATH: /app
     volumes:
       - ./local_llm.yaml:/app/local_llm.yaml:ro
+      - ./local_llm:/app/local_llm
+      - ./tests:/app/tests
 
   dev:
     build: .
