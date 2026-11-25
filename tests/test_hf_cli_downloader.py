@@ -36,7 +36,7 @@ class HfCliDownloaderTests(unittest.TestCase):
             [
                 (
                     [
-                        "huggingface-cli",
+                        "hf",
                         "download",
                         "owner/name",
                         "model.gguf",

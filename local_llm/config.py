@@ -90,7 +90,7 @@ class GenerationDefaults(BaseModel):
 class DownloadSettings(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    command: str = "huggingface-cli"
+    command: str = "hf"
     timeout_seconds: int = Field(default=1800, gt=0)
     public_only: bool = True
 

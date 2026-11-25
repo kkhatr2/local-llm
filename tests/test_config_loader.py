@@ -26,10 +26,11 @@ class ConfigLoaderTests(unittest.TestCase):
         settings = ConfigLoader().load()
 
         self.assertIsInstance(settings, Settings)
-        self.assertEqual(len(settings.models), 2)
+        self.assertEqual(len(settings.models), 3)
         aliases = [model.alias for model in settings.models]
         self.assertIn("phi4-mini", aliases)
         self.assertIn("qwen25-coder-3b", aliases)
+        self.assertIn("qwen25-coder-05b", aliases)
         self.assertEqual(settings.llama_defaults.n_ctx, 16384)
         self.assertEqual(settings.llama_defaults.n_batch, 512)
         self.assertTrue(settings.llama_defaults.flash_attn)

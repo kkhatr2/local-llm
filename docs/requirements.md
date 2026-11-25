@@ -4,7 +4,7 @@ Status: **approved for MVP definition**. CompositionRoot (C1), ConfigLoader (C2)
 
 Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. All application modules and their tests pass inside the Docker test service, including the production ASGI entry point `local_llm.api:app` (`app = build_app()` in `local_llm/api.py`, built by `local_llm/composition.py` with FastAPI lifespan startup wiring). All future development, testing, deployment, and other execution must occur inside Docker containers only.
 
-Verification evidence: `docker compose run --rm tests` completed with `Ran 88 tests ... OK` (including composition tests); `docker compose --profile serve config` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), a read-only config mount, and local model/cache mounts; `git check-ignore -v models/ .cache/responses/` reports both paths as ignored. The real-model smoke test (criterion 28) is **explicitly skipped**: no public model weights were downloaded during MVP verification. Contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker, so real HF downloads and real GGUF CPU inference remain unverified. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
+Verification evidence: `docker compose run --rm tests` completed with `Ran 88 tests ... OK` (including composition tests); `docker compose --profile serve config` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), a read-only config mount, and local model/cache mounts; `git check-ignore -v models/ .cache/responses/` reports both paths as ignored. The real-model smoke test (criterion 28) **passed inside Docker** with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`, file `qwen2.5-coder-0.5b-instruct-q4_k_m.gguf`): `hf download` succeeded, startup reached `/health`, a chat request returned `200` with `acceptance ok`, and a repeat replayed the cached response. The downloaded weights and cache entries were removed after verification. Contract tests still use a fake Hugging Face CLI and a fake Llama runtime. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
 
 ## Original request
 
@@ -215,7 +215,7 @@ cache:
   replay_sse: true
 
 download:
-  command: huggingface-cli
+  command: hf
   timeout_seconds: 1800
   public_only: true
 
@@ -242,6 +242,17 @@ models:
     enabled: true
     repo_id: Qwen/Qwen2.5-Coder-3B-Instruct-GGUF
     filename: qwen2.5-coder-3b-instruct-q4_k_m.gguf
+    revision: main
+    options:
+      n_ctx: 16384
+      n_batch: 512
+      flash_attn: true
+      n_threads: 8
+
+  - alias: qwen25-coder-05b
+    enabled: true
+    repo_id: Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF
+    filename: qwen2.5-coder-0.5b-instruct-q4_k_m.gguf
     revision: main
     options:
       n_ctx: 16384
@@ -278,7 +289,7 @@ Effective llama.cpp settings are produced by merging, in order:
 For each configured model, the downloader should invoke the Hugging Face CLI approximately as:
 
 ```sh
-huggingface-cli download <repo_id> <filename> --revision <revision> --local-dir models/<alias>
+hf download <repo_id> <filename> --revision <revision> --local-dir models/<alias>
 ```
 
 Before download:
@@ -454,7 +465,7 @@ These product-level assumptions were closed by the tech lead. The concrete decis
 | `ASSUMPTION-3` | Admin route names will be `POST /admin/models`, `POST /admin/models/{alias}/unload`, and `DELETE /admin/models/{alias}`. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-4` | Resource thresholds are configurable with safe defaults. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-5` | Admin endpoints require no auth because the host publish is loopback-only. | Tech Lead + Security Engineer | Closed; see `docs/architecture.md`. |
-| `ASSUMPTION-6` | HF CLI invocation uses `huggingface-cli download` with `--local-dir`; revision/filename are passed when configured. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-6` | HF CLI invocation uses the configured CLI (`hf` by default) with `--local-dir`; revision/filename are passed when configured. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-7` | Generation requests are globally serialized because models are loaded/unloaded per request. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-8` | “Unload after response” means after the final token for streaming responses. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-9` | Runtime-added aliases are ephemeral unless copied into YAML. | Tech Lead | Closed; see `docs/architecture.md`. |
@@ -497,7 +508,7 @@ Each criterion has one observable behavior and an owning module.
 25. **[docs]** README shows how to set OpenCode’s custom provider `baseURL` to `http://127.0.0.1:8000/v1/models/{alias}`.
 26. **[docs]** README states clearly that the user is responsible for verifying model size before loading.
 27. **[tests]** Contract and integration tests using a fake Hugging Face CLI and fake Llama runtime pass inside the test container.
-28. **[verification]** A real-model smoke test is either recorded as passing inside Docker or explicitly marked skipped with reason. **Status: explicitly skipped for MVP.** Reason: no public model weights were downloaded during MVP verification; contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker, so real HF downloads and real GGUF CPU inference remain unverified.
+28. **[verification]** A real-model smoke test is either recorded as passing inside Docker or explicitly marked skipped with reason. **Status: passed inside Docker.** Evidence: `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` downloaded with `hf`, API startup reached `/health`, `POST /v1/models/qwen25-coder-05b/chat/completions` returned `200` with content `acceptance ok`, and a repeated request replayed the cached response. Weights and cache entries were deleted after the test.
 29. **[cache]** A completed non-streaming response is written as one JSON file under `.cache/responses/`.
 30. **[cache]** Repeating the same normalized request returns the stored response without invoking the fake Llama runtime.
 31. **[cache]** Repeating the same request with a different sampling parameter does not return the first cached response.

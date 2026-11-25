@@ -1,6 +1,6 @@
 # API operator runbook
 
-Status: **implemented HTTP contract; external boundaries unverified**. Request/response shapes and status codes below are derived from the route code (`local_llm/chat_routes.py`, `local_llm/admin_routes.py`), error mapping (`local_llm/error_mapper.py`, `local_llm/composition.py`), and Compose config (`docker-compose.yml`). Contract tests use a fake Hugging Face CLI and a fake Llama runtime. No real public model weights or real GGUF CPU inference were exercised; this document does not claim a real-model smoke test.
+Status: **implemented HTTP contract; external boundaries exercised by a real-model smoke test**. Request/response shapes and status codes below are derived from the route code (`local_llm/chat_routes.py`, `local_llm/admin_routes.py`), error mapping (`local_llm/error_mapper.py`, `local_llm/composition.py`), and Compose config (`docker-compose.yml`). Contract tests use a fake Hugging Face CLI and a fake Llama runtime. A real `hf` download and real GGUF CPU inference were verified inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF`; the weights and cache entries were removed afterward.
 
 Authoritative scope: `docs/requirements.md`. Component/design detail: `docs/architecture.md`. Runtime settings: `local_llm.yaml`.
 
@@ -262,4 +262,4 @@ Purpose: unregister an alias without deleting its weights or changing the runnin
 ## Verification status
 
 - Verified inside Docker: contract tests for every route above, including cache hit/miss, SSE replay, 404/409/422/503/502 mappings, and lazy load/unload, via `docker compose run --rm tests`. Compose serve config confirms the loopback-only publish and read-only config mount.
-- Unverified: real Hugging Face downloads and real GGUF CPU inference (fakes are used in tests); a real-model smoke test was explicitly skipped.
+- Verified: a real-model smoke test inside Docker downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` with `hf`, started the API, returned `200` from the chat endpoint, and replayed the cached response on repeat. The downloaded weights and cache entries were removed afterward. Contract tests continue to use fakes.

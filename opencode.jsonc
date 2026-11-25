@@ -127,5 +127,48 @@
         },
       },
     },
+
+    "local-qwen-coder-05b": {
+      "name": "Local Qwen Coder 0.5B",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:8000/v1/models/qwen25-coder-05b",
+        "headerTimeout": 600000,
+        "chunkTimeout": 600000,
+        "timeout": 1800000,
+        "encoding": "none",
+      },
+      "compatibility": {
+        "streamUsage": false,
+      },
+      "models": {
+        "chat": {
+          "name": "Qwen 2.5 Coder 0.5B CPU",
+          "modelID": "qwen25-coder-05b",
+          "limit": {
+            "context": 16384,
+            "output": 512,
+          },
+          "capabilities": {
+            "tools": false,
+            "input": ["text"],
+            "output": ["text"],
+          },
+          "body": {
+            "options": {
+              "n_ctx": 16384,
+              "n_batch": 512,
+              "flash_attn": true,
+              "n_threads": 8,
+              "temperature": 0.1,
+              "top_p": 0.2,
+              "top_k": 20,
+              "min_p": 0.08,
+              "repeat_penalty": 1.1,
+            },
+          },
+        },
+      },
+    },
   },
 }

@@ -16,7 +16,7 @@ There are **14 modeled components**:
 | C1 | CompositionRoot | Application | Implemented | Constructs concrete settings, clients, stores, clocks, and runtimes; owns startup wiring. |
 | C2 | ConfigLoader | Application | Implemented | Reads `local_llm.yaml`, validates fields, merges defaults, and produces immutable settings. |
 | C3 | ModelRegistry | Application | Implemented | Tracks aliases, repo IDs, filenames, revisions, options, and registered/downloaded state. |
-| C4 | HfCliDownloader | Application | Implemented | Invokes `huggingface-cli download`, writes into `models/<alias>/`, and verifies the GGUF file. |
+| C4 | HfCliDownloader | Application | Implemented | Invokes the configured Hugging Face CLI (`hf` by default), writes into `models/<alias>/`, and verifies the GGUF file. |
 | C5 | ResourcePreflight | Application | Implemented | Checks disk and memory estimates and fails closed before download or load. |
 | C6 | LlamaRuntimeAdapter | Application | Implemented | Loads a GGUF with merged llama options, generates completions, and unloads after response. |
 | C7 | ChatRoutes | Application | Implemented | Exposes `/health`, `/v1/models`, and `/v1/models/{alias}/chat/completions`. |
@@ -201,7 +201,7 @@ classDiagram
 | C1 CompositionRoot | Settings from C2 | Constructs all concrete components and injects collaborators. | Running FastAPI app. | Startup aborts with a named configuration error. |
 | C2 ConfigLoader | `local_llm.yaml`, env overrides | Validates aliases, repo IDs, `.gguf` filenames, llama options, cache settings, and thresholds. | Immutable settings. | Raises validation error naming the offending field. |
 | C3 ModelRegistry | Configured or runtime-added model records | Stores alias-to-model mappings and lifecycle state. | Model records for routes and runtime. | Duplicate or unknown aliases are rejected. |
-| C4 HfCliDownloader | Model record and destination | Runs `huggingface-cli download` inside the container and verifies the file. | Local GGUF path. | Returns sanitized download error; writes no partial model path on rejected requests. |
+| C4 HfCliDownloader | Model record and destination | Runs the configured Hugging Face CLI (`hf` by default) inside the container and verifies the file. | Local GGUF path. | Returns sanitized download error; writes no partial model path on rejected requests. |
 | C5 ResourcePreflight | Disk/RAM thresholds and model path | Estimates required disk before download and memory before load. | Approval to proceed. | Fails closed with `503` and does not download or load. |
 | C6 LlamaRuntimeAdapter | GGUF path, merged llama and sampling options, chat request | Calls `Llama(...)`, generates a response using merged `temperature`, `top_p`, `top_k`, `min_p`, and `repeat_penalty`, then unloads after completion. | OpenAI-compatible response or SSE stream. | Runtime failures are mapped to sanitized `502`/`504`. |
 | C7 ChatRoutes | OpenAI-compatible request body | Checks cache first; on miss, coordinates preflight, registry, runtime, cache write, and unload. | JSON or SSE response. | Invalid bodies return `422` through C10. |
@@ -321,7 +321,8 @@ flowchart TB
 - Verified: `docker compose --profile serve up -d api` started the API container with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container.
 - Verified: `git check-ignore -v models/ .cache/responses/` reports `.gitignore:2:models/` and `.gitignore:3:.cache/`.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
-- Unverified: a real-model smoke test was skipped; no public model weights were downloaded during MVP verification. Contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker. SSE replay reconstructs frames from stored complete responses by design; it is not true incremental streaming generation.
+- Verified: a real-model smoke test passed inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`). `hf download` restored the GGUF, startup reached `/health`, chat returned `200`, and a repeat replayed the cached response; weights and cache entries were removed afterward.
+- Contract tests use a fake Hugging Face CLI and a fake Llama runtime. SSE replay reconstructs frames from stored complete responses by design; it is not true incremental streaming generation.
 - No application components are pending for MVP. C13 and C14 are external boundaries; `ASSUMPTION-16` (committed dependency lock file) remains deferred and non-MVP.
 
 ## Closed implementation assumptions
@@ -335,7 +336,7 @@ The tech lead closed `ASSUMPTION-1` through `ASSUMPTION-16`. Closing a decision 
 | `ASSUMPTION-3` | `POST /admin/models`, `POST /admin/models/{alias}/unload`, `DELETE /admin/models/{alias}`. `DELETE` unregisters only: `204` success, `404` unknown; `unload` is a no-op when not loaded. | C8 |
 | `ASSUMPTION-4` | Disk free `>= min_free_disk_gb + reserve_disk_gb`. RAM estimate is GGUF file size; available RAM from `/proc/meminfo` `MemAvailable` with `os.sysconf` fallback; read failure fails closed. | C5 |
 | `ASSUMPTION-5` | No auth in MVP; loopback-only host publish is the control. | C11 boundary; C7/C8 |
-| `ASSUMPTION-6` | `{command} download {repo_id} {filename} --revision {revision} --local-dir models/<alias>`. Public check before download; runner and repo-info injected; skip non-empty existing file. | C4 |
+| `ASSUMPTION-6` | `{command} download {repo_id} {filename} --revision {revision} --local-dir models/<alias>`, with `command: hf` by default. Public check before download; runner and repo-info injected; skip non-empty existing file. | C4 |
 | `ASSUMPTION-7` | One process-wide lock, 30 s timeout, `503` on contention. | C7 / C6 |
 | `ASSUMPTION-8` | Streaming unload in `try/finally`; cache `put` after full response assembly; no cache on error. | C6 / C7 / C9 |
 | `ASSUMPTION-9` | Runtime aliases are ephemeral; server never rewrites `local_llm.yaml`. | C8 |
