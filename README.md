@@ -20,6 +20,7 @@ All development, testing, deployment, and operation must happen inside Docker co
 - `local_llm/chat_routes.py` — implemented health, model-list, and chat completion routes.
 - `local_llm/admin_routes.py` — implemented runtime add, unload, and remove routes.
 - `local_llm/composition.py` — injectable FastAPI app builder and stable error handlers.
+- `local_llm/api.py` — production ASGI entry point that exposes `app = build_app()` for `uvicorn local_llm.api:app`.
 - `local_llm/error_mapper.py` — implemented sanitized HTTP error envelopes.
 - `tests/` — containerized test suite.
 - `AGENTS.md` — repository operating rules.
@@ -34,7 +35,7 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 83 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, and admin-route tests and has been verified with this command.
+The full suite contains 89 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests and has been verified with this command.
 
 Configuration path: `LOCAL_LLM_CONFIG` selects the YAML file; an explicit path argument takes precedence, then the env var, then repo-root `local_llm.yaml`.
 
@@ -109,6 +110,8 @@ Effective llama.cpp settings are merged in this order:
 2. the selected model’s `options`
 3. per-request `options` from the chat request body
 
+No parameter-count cap is enforced. The user is responsible for verifying model size and resource requirements before loading a model: configurable, fail-closed preflight checks disk before download and memory before load, but a model is never rejected solely for having an unknown or large parameter count.
+
 Downloaded GGUF files are stored in `models/<alias>/` and are ignored by Git.
 
 ## Response cache
@@ -150,3 +153,9 @@ http://127.0.0.1:8000/v1/models/phi4-mini
 To make a local model the default, change the root `"model"` value in `opencode.jsonc` to `local-phi4/chat`.
 
 After editing OpenCode configuration, use `/reload` if the change is not picked up automatically.
+
+## Verification evidence
+
+- `docker compose run --rm tests` passes all 89 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests inside the Miniconda container.
+- `docker compose --profile serve config` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, and the host publish is loopback-only (`127.0.0.1:8000`), with a read-only config mount and local `models/` and `.cache/responses/` mounts. `git check-ignore -v models/ .cache/responses/` confirms both paths are ignored.
+- Real-model smoke test: **explicitly skipped**. No public model weights were downloaded during MVP verification. Contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker, so real HF downloads and real GGUF CPU inference remain unverified. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.

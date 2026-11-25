@@ -42,10 +42,10 @@ If these documents disagree with implementation comments, update the documents f
 
 ## Current state
 
-- Implemented: `local_llm/cache.py`, `local_llm/config.py`, `local_llm/registry.py`, `local_llm/downloader.py`, `local_llm/preflight.py`, `local_llm/runtime.py`, `local_llm/error_mapper.py`, `local_llm/chat_routes.py`, `local_llm/admin_routes.py`, `local_llm/composition.py`, cache tests, config tests, registry tests, downloader tests, resource-preflight tests, runtime tests, error-mapping tests, chat-route tests, admin-route tests, Docker artifacts, `local_llm.yaml`, OpenCode local provider configuration, `AGENTS.md`, and `docs/architecture.md`.
+- Implemented: `local_llm/cache.py`, `local_llm/config.py`, `local_llm/registry.py`, `local_llm/downloader.py`, `local_llm/preflight.py`, `local_llm/runtime.py`, `local_llm/error_mapper.py`, `local_llm/chat_routes.py`, `local_llm/admin_routes.py`, `local_llm/composition.py`, `local_llm/api.py` (production ASGI entry point, `app = build_app()`), cache tests, config tests, registry tests, downloader tests, resource-preflight tests, runtime tests, error-mapping tests, chat-route tests, admin-route tests, composition tests, Docker artifacts, `local_llm.yaml`, OpenCode local provider configuration, `AGENTS.md`, and `docs/architecture.md`.
 - Decisions closed: `ASSUMPTION-1`–`ASSUMPTION-16` are recorded in `docs/architecture.md`; closing a decision is not an implementation claim.
-- Pending: C1 production composition root/FastAPI entry point.
-- Verified: `docker compose run --rm tests` passes all 83 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, and admin-route tests inside the Miniconda container.
+- No application components are pending for MVP. Only deferred, non-MVP items remain in `docs/requirements.md` (for example, the committed dependency lock file from `ASSUMPTION-16`).
+- Verified: `docker compose run --rm tests` passes all 89 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests inside the Miniconda container. `docker compose --profile serve config` confirms the `local_llm.api:app` command and loopback-only host publish.
 
 ## Definition of done
 

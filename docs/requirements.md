@@ -1,8 +1,10 @@
 # Local LLM API requirements
 
-Status: **approved for MVP definition**. ConfigLoader (C2), ModelRegistry (C3), HfCliDownloader (C4), ResourcePreflight (C5), LlamaRuntimeAdapter (C6), ChatRoutes (C7), AdminRoutes (C8), and ErrorMapper (C10) are implemented and tested. No product-level blockers remain. The tech lead has closed the implementation-owned assumptions listed below and recorded the decisions in `docs/architecture.md`.
+Status: **approved for MVP definition**. CompositionRoot (C1), ConfigLoader (C2), ModelRegistry (C3), HfCliDownloader (C4), ResourcePreflight (C5), LlamaRuntimeAdapter (C6), ChatRoutes (C7), AdminRoutes (C8), ResponseCache (C9), and ErrorMapper (C10) are implemented and tested. All application components are complete, including the production ASGI entry point; no product-level blockers remain. The tech lead has closed the implementation-owned assumptions listed below and recorded the decisions in `docs/architecture.md`.
 
-Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. The response-cache, config-loader, model-registry, downloader, resource-preflight, runtime, chat-route, admin-route, and error-mapping modules and their tests pass inside the Docker test service; the production API entry point is still pending. All future development, testing, deployment, and other execution must occur inside Docker containers only. Compose configuration was validated with the provided Docker Compose binary, and `docker compose run --rm tests` completed with `Ran 83 tests ... OK`.
+Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. All application modules and their tests pass inside the Docker test service, including the production ASGI entry point `local_llm.api:app` (`app = build_app()` in `local_llm/api.py`, built by `local_llm/composition.py` with FastAPI lifespan startup wiring). All future development, testing, deployment, and other execution must occur inside Docker containers only.
+
+Verification evidence: `docker compose run --rm tests` completed with `Ran 89 tests ... OK` (including composition tests); `docker compose --profile serve config` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), a read-only config mount, and local model/cache mounts; `git check-ignore -v models/ .cache/responses/` reports both paths as ignored. The real-model smoke test (criterion 28) is **explicitly skipped**: no public model weights were downloaded during MVP verification. Contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker, so real HF downloads and real GGUF CPU inference remain unverified. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
 
 ## Original request
 
@@ -495,7 +497,7 @@ Each criterion has one observable behavior and an owning module.
 25. **[docs]** README shows how to set OpenCode’s custom provider `baseURL` to `http://127.0.0.1:8000/v1/models/{alias}`.
 26. **[docs]** README states clearly that the user is responsible for verifying model size before loading.
 27. **[tests]** Contract and integration tests using a fake Hugging Face CLI and fake Llama runtime pass inside the test container.
-28. **[verification]** A real-model smoke test is either recorded as passing inside Docker or explicitly marked skipped with reason.
+28. **[verification]** A real-model smoke test is either recorded as passing inside Docker or explicitly marked skipped with reason. **Status: explicitly skipped for MVP.** Reason: no public model weights were downloaded during MVP verification; contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker, so real HF downloads and real GGUF CPU inference remain unverified.
 29. **[cache]** A completed non-streaming response is written as one JSON file under `.cache/responses/`.
 30. **[cache]** Repeating the same normalized request returns the stored response without invoking the fake Llama runtime.
 31. **[cache]** Repeating the same request with a different sampling parameter does not return the first cached response.
@@ -529,4 +531,4 @@ Each criterion has one observable behavior and an owning module.
 
 ## Next step
 
-Hand this to `tech-lead` to close `ASSUMPTION-1` through `ASSUMPTION-16`, then to `developer` for implementation. All verification after this point must be executed inside Docker containers.
+MVP implementation is complete, including the C1 production composition root and ASGI entry point; `ASSUMPTION-1` through `ASSUMPTION-16` are closed and recorded in `docs/architecture.md`. Remaining work is limited to the deferred, non-MVP items listed above. All verification after this point must be executed inside Docker containers.

@@ -1,6 +1,6 @@
 # Architecture
 
-Status: **planned system architecture with implemented pieces marked**. This document describes the intended component boundaries for the local LLM API. It does not claim the full API is implemented.
+Status: **implemented system architecture; external boundaries unverified against real services**. This document describes the component boundaries for the local LLM API. All application components are implemented, including the production ASGI entry point. The external boundaries (C13 Hugging Face CLI and C14 llama.cpp CPU inference) have not been exercised with real public model weights during MVP verification.
 
 Authoritative scope: `docs/requirements.md`. Runtime settings: `local_llm.yaml`. Operating rules: `AGENTS.md`.
 
@@ -8,12 +8,12 @@ Authoritative scope: `docs/requirements.md`. Runtime settings: `local_llm.yaml`.
 
 There are **14 modeled components**:
 
-- **10 application components** that will live in the Python service.
+- **10 application components** that live in the Python service.
 - **4 boundary components** that are external systems or container/client configuration.
 
 | ID | Component | Kind | Status | Responsibility |
 | --- | --- | --- | --- | --- |
-| C1 | CompositionRoot | Application | Planned | Constructs concrete settings, clients, stores, clocks, and runtimes; owns startup wiring. |
+| C1 | CompositionRoot | Application | Implemented | Constructs concrete settings, clients, stores, clocks, and runtimes; owns startup wiring. |
 | C2 | ConfigLoader | Application | Implemented | Reads `local_llm.yaml`, validates fields, merges defaults, and produces immutable settings. |
 | C3 | ModelRegistry | Application | Implemented | Tracks aliases, repo IDs, filenames, revisions, options, and registered/downloaded state. |
 | C4 | HfCliDownloader | Application | Implemented | Invokes `huggingface-cli download`, writes into `models/<alias>/`, and verifies the GGUF file. |
@@ -316,10 +316,13 @@ flowchart TB
 
 ## Verified and unverified
 
-- Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 83 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, and admin-route tests.
+- Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary. `docker compose --profile serve config` confirms the API command `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, loopback-only host publishing (`host_ip: 127.0.0.1`, `published: "8000"`, `target: 8000`), a read-only config mount, and local model/cache mounts.
+- Verified: the production ASGI entry point `local_llm.api:app` is exposed as `app = build_app()` in `local_llm/api.py`; `local_llm/composition.py` uses FastAPI lifespan startup wiring and no deprecated `on_event` hook.
+- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 89 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests.
+- Verified: `git check-ignore -v models/ .cache/responses/` reports `.gitignore:2:models/` and `.gitignore:3:.cache/`.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
-- Pending: C1 production composition root/FastAPI entry point.
+- Unverified: a real-model smoke test was skipped; no public model weights were downloaded during MVP verification. Contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker. SSE replay reconstructs frames from stored complete responses by design; it is not true incremental streaming generation.
+- No application components are pending for MVP. C13 and C14 are external boundaries; `ASSUMPTION-16` (committed dependency lock file) remains deferred and non-MVP.
 
 ## Closed implementation assumptions
 
