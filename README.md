@@ -26,6 +26,7 @@ All development, testing, deployment, and operation must happen inside Docker co
 - `AGENTS.md` — repository operating rules.
 - `docs/requirements.md` — approved requirements and acceptance criteria.
 - `docs/architecture.md` — component, sequence, state, and deployment views.
+- [docs/api.md](docs/api.md) — operator runbook: Docker workflow and HTTP endpoint reference.
 
 ## Commands
 
