@@ -143,22 +143,6 @@ class LlamaRuntimeAdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             adapter.chat(ChatRequest(messages=[]))
 
-    def test_stream_chat_yields_sse_frames_and_done(self):
-        record = {}
-        adapter = LlamaRuntimeAdapter(_make_factory(record))
-        adapter.load("model.gguf")
-        frames = list(adapter.stream_chat(ChatRequest(messages=MESSAGES)))
-        self.assertEqual(frames[-1], "data: [DONE]\n\n")
-        self.assertTrue(frames[0].startswith("data: "))
-
-    def test_stream_chat_passes_stream_true(self):
-        record = {}
-        adapter = LlamaRuntimeAdapter(_make_factory(record))
-        adapter.load("model.gguf")
-        list(adapter.stream_chat(ChatRequest(messages=MESSAGES)))
-        instance = record["instance"]
-        self.assertTrue(instance.completion_calls[0][1])
-
     def test_merge_load_options_applies_precedence(self):
         result = merge_load_options(
             {"n_ctx": 1, "n_batch": 2, "flash_attn": False},

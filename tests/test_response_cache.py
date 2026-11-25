@@ -107,7 +107,7 @@ class ResponseCacheTests(unittest.TestCase):
         self.assertIn('"finish_reason":"stop"', joined)
 
     def test_max_size_evicts_entries(self) -> None:
-        config = CacheConfig(max_size_mb=0.00001)
+        config = CacheConfig(max_size_mb=0.0009)
         cache = ResponseCache(config, root=self.root, clock=lambda: self.now)
         first_key = self.key(fingerprint="1:1")
         second_key = self.key(fingerprint="2:2")
@@ -115,8 +115,10 @@ class ResponseCacheTests(unittest.TestCase):
         cache.put(first_key, alias="phi4-mini", revision="main", response=RESPONSE)
         cache.put(second_key, alias="phi4-mini", revision="main", response=RESPONSE)
 
-        total_bytes = sum(path.stat().st_size for path in cache.dir.glob("*.json"))
-        self.assertLess(total_bytes, int(config.max_size_mb * 1024 * 1024))
+        self.assertFalse(cache.path_for(first_key).exists())
+        self.assertTrue(cache.path_for(second_key).exists())
+        self.assertIsNone(cache.get(first_key))
+        self.assertEqual(cache.get(second_key), RESPONSE)
 
     def test_cache_dir_may_not_escape_workspace(self) -> None:
         with self.assertRaises(ValueError):

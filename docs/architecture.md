@@ -149,7 +149,6 @@ classDiagram
     class LlamaRuntimeAdapter {
         +load(model_path, options) void
         +chat(request) Response
-        +stream_chat(request) Iterator
         +unload() void
     }
 
@@ -228,7 +227,7 @@ sequenceDiagram
     CACHE-->>CHAT: cached response
     CHAT->>CACHE: replay_sse(response) if stream:true
     CACHE-->>OC: SSE frames + [DONE]
-    Note over CHAT,CACHE: No preflight, no model load, no inference
+    Note over CHAT,CACHE: Cache hits skip load preflight, model loading, and inference after GGUF path/fingerprint resolution; if GGUF is absent, download restoration and its fail-closed preflight still occur before key computation
 ```
 
 ## UML sequence: cache miss with model load and unload
@@ -307,7 +306,7 @@ flowchart TB
 - `CompositionRoot` is the only component that constructs concrete implementations.
 - HTTP routes depend on application contracts, not on `llama_cpp` or filesystem details.
 - I/O, clocks, randomness, subprocess calls, and retries stay at explicit edges.
-- Response cache lookup happens before preflight and runtime load.
+- Cache hits skip load preflight, model loading, and inference after GGUF path/fingerprint resolution; if the GGUF file is absent, download restoration and its fail-closed preflight still occur before key computation.
 - `ModelRegistry.list()` is the external model-list contract and returns `ModelRecord`s only; `get()` is internal and may return `RegistryEntry.path` for runtime loading. External routes must not serialize that path.
 - Cache keys include request `options`; changing `n_ctx`, `n_batch`, `flash_attn`, `temperature`, `top_p`, `top_k`, `min_p`, or `repeat_penalty` produces a different key.
 - `make_cache_key` receives a validated alias from the registry and a fingerprint from `weight_fingerprint`; both are non-empty by contract and are not re-checked inside the cache.
@@ -318,7 +317,8 @@ flowchart TB
 
 - Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary. `docker compose --profile serve config` confirms the API command `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, loopback-only host publishing (`host_ip: 127.0.0.1`, `published: "8000"`, `target: 8000`), a read-only config mount, and local model/cache mounts.
 - Verified: the production ASGI entry point `local_llm.api:app` is exposed as `app = build_app()` in `local_llm/api.py`; `local_llm/composition.py` uses FastAPI lifespan startup wiring and no deprecated `on_event` hook.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 89 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests.
+- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 88 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests.
+- Verified: `docker compose --profile serve up -d api` started the API container with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container.
 - Verified: `git check-ignore -v models/ .cache/responses/` reports `.gitignore:2:models/` and `.gitignore:3:.cache/`.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
 - Unverified: a real-model smoke test was skipped; no public model weights were downloaded during MVP verification. Contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker. SSE replay reconstructs frames from stored complete responses by design; it is not true incremental streaming generation.

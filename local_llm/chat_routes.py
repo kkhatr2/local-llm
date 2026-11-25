@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -14,7 +13,7 @@ from local_llm.cache import (
     make_cache_key,
     weight_fingerprint,
 )
-from local_llm.preflight import ResourceError
+from local_llm.locking import locked
 from local_llm.registry import ModelState
 from local_llm.runtime import (
     SAMPLING_OPTION_KEYS,
@@ -41,14 +40,20 @@ class ChatCompletionRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-@contextmanager
-def _locked(lock: Any) -> Iterator[None]:
-    if not lock.acquire(timeout=30):
-        raise ResourceError("server is busy")
-    try:
-        yield
-    finally:
-        lock.release()
+def _resolve_path(services: Any, alias: str) -> Any:
+    """Download a missing GGUF under the process lock, re-checking first."""
+
+    with locked(services.lock):
+        entry = services.registry.get(alias)
+        path = entry.path
+        if path is not None and services.downloader.exists(
+            entry.record, services.root
+        ):
+            return path
+        services.preflight.check_download(services.root)
+        path = services.downloader.download(entry.record, services.root)
+        services.registry.mark_downloaded(alias, path)
+        return path
 
 
 def create_chat_router(services: Any) -> APIRouter:
@@ -90,9 +95,7 @@ def create_chat_router(services: Any) -> APIRouter:
 
         path = entry.path
         if path is None or not services.downloader.exists(entry.record, services.root):
-            services.preflight.check_download(services.root)
-            path = services.downloader.download(entry.record, services.root)
-            services.registry.mark_downloaded(alias, path)
+            path = _resolve_path(services, alias)
             entry = services.registry.get(alias)
 
         fingerprint = weight_fingerprint(path)
@@ -129,7 +132,7 @@ def create_chat_router(services: Any) -> APIRouter:
                 )
             return JSONResponse(cached)
 
-        with _locked(services.lock):
+        with locked(services.lock):
             cached = services.cache.get(key)
             if cached is not None:
                 if request.stream:
@@ -152,9 +155,6 @@ def create_chat_router(services: Any) -> APIRouter:
                     revision=entry.record.revision,
                     response=response,
                 )
-            except Exception:
-                services.registry.set_state(alias, ModelState.FAILED)
-                raise
             finally:
                 services.runtime.unload()
                 services.registry.set_state(alias, ModelState.UNLOADED)

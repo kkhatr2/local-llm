@@ -8,6 +8,7 @@ from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
 from local_llm.config import ModelRecord
+from local_llm.locking import locked
 from local_llm.registry import DuplicateAliasError, ModelState, UnknownAliasError
 
 
@@ -33,13 +34,14 @@ def create_admin_router(services: Any) -> APIRouter:
 
     @router.post("/models/{alias}/unload")
     def unload(alias: str) -> dict[str, Any]:
-        entry = services.registry.get(alias)
-        if entry.state != ModelState.LOADED or not services.runtime.is_loaded():
-            return {"alias": alias, "unloaded": False}
+        with locked(services.lock):
+            entry = services.registry.get(alias)
+            if entry.state != ModelState.LOADED or not services.runtime.is_loaded():
+                return {"alias": alias, "unloaded": False}
 
-        services.runtime.unload()
-        services.registry.set_state(alias, ModelState.UNLOADED)
-        return {"alias": alias, "unloaded": True}
+            services.runtime.unload()
+            services.registry.set_state(alias, ModelState.UNLOADED)
+            return {"alias": alias, "unloaded": True}
 
     @router.delete("/models/{alias}", status_code=204)
     def remove(alias: str) -> Response:

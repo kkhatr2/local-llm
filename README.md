@@ -35,7 +35,7 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 89 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests and has been verified with this command.
+The full suite contains 88 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests and has been verified with this command.
 
 Configuration path: `LOCAL_LLM_CONFIG` selects the YAML file; an explicit path argument takes precedence, then the env var, then repo-root `local_llm.yaml`.
 
@@ -156,6 +156,6 @@ After editing OpenCode configuration, use `/reload` if the change is not picked 
 
 ## Verification evidence
 
-- `docker compose run --rm tests` passes all 89 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests inside the Miniconda container.
-- `docker compose --profile serve config` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, and the host publish is loopback-only (`127.0.0.1:8000`), with a read-only config mount and local `models/` and `.cache/responses/` mounts. `git check-ignore -v models/ .cache/responses/` confirms both paths are ignored.
+- `docker compose run --rm tests` passes all 88 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests inside the Miniconda container.
+- `docker compose --profile serve config` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, and the host publish is loopback-only (`127.0.0.1:8000`), with a read-only config mount and local `models/` and `.cache/responses/` mounts. `docker compose --profile serve up -d api` was smoke-tested with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container. `git check-ignore -v models/ .cache/responses/` confirms both paths are ignored.
 - Real-model smoke test: **explicitly skipped**. No public model weights were downloaded during MVP verification. Contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker, so real HF downloads and real GGUF CPU inference remain unverified. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.

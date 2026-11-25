@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterator, Mapping
-
-from local_llm.cache import canonical_json
+from typing import Any, Mapping
 
 LOAD_OPTION_KEYS = ("n_ctx", "n_batch", "flash_attn", "n_threads", "n_gpu_layers", "verbose")
 SAMPLING_OPTION_KEYS = (
@@ -118,13 +116,13 @@ class LlamaRuntimeAdapter:
     def load(self, model_path: Any, options: Any = None) -> None:
         normalized = _as_mapping(options)
         load_options = merge_load_options(self._llama_defaults, normalized, {})
-        self._model_sampling = merge_sampling_options(None, normalized, None, None)
         try:
             instance = self._factory(model_path=model_path, **load_options)
         except Exception:
             self._instance = None
             raise
         self._instance = instance
+        self._model_sampling = merge_sampling_options(None, normalized, None, None)
 
     def is_loaded(self) -> bool:
         return self._instance is not None
@@ -160,25 +158,6 @@ class LlamaRuntimeAdapter:
         return self._instance.create_chat_completion(
             messages=messages, stream=False, **sampling
         )
-
-    def stream_chat(self, request: Any) -> Iterator[str]:
-        if not self.is_loaded():
-            raise RuntimeError("model is not loaded")
-        mapping = self._request_mapping(request)
-        messages = mapping.get("messages")
-        if not messages:
-            raise ValueError("messages is required")
-        sampling = self._sampling_for(request)
-        chunks = self._instance.create_chat_completion(
-            messages=messages, stream=True, **sampling
-        )
-
-        def generator() -> Iterator[str]:
-            for chunk in chunks:
-                yield "data: " + canonical_json(chunk) + "\n\n"
-            yield "data: [DONE]\n\n"
-
-        return generator()
 
 
 __all__ = [

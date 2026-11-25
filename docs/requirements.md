@@ -4,7 +4,7 @@ Status: **approved for MVP definition**. CompositionRoot (C1), ConfigLoader (C2)
 
 Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. All application modules and their tests pass inside the Docker test service, including the production ASGI entry point `local_llm.api:app` (`app = build_app()` in `local_llm/api.py`, built by `local_llm/composition.py` with FastAPI lifespan startup wiring). All future development, testing, deployment, and other execution must occur inside Docker containers only.
 
-Verification evidence: `docker compose run --rm tests` completed with `Ran 89 tests ... OK` (including composition tests); `docker compose --profile serve config` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), a read-only config mount, and local model/cache mounts; `git check-ignore -v models/ .cache/responses/` reports both paths as ignored. The real-model smoke test (criterion 28) is **explicitly skipped**: no public model weights were downloaded during MVP verification. Contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker, so real HF downloads and real GGUF CPU inference remain unverified. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
+Verification evidence: `docker compose run --rm tests` completed with `Ran 88 tests ... OK` (including composition tests); `docker compose --profile serve config` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), a read-only config mount, and local model/cache mounts; `git check-ignore -v models/ .cache/responses/` reports both paths as ignored. The real-model smoke test (criterion 28) is **explicitly skipped**: no public model weights were downloaded during MVP verification. Contract tests use a fake Hugging Face CLI and a fake Llama runtime inside Docker, so real HF downloads and real GGUF CPU inference remain unverified. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
 
 ## Original request
 
@@ -472,7 +472,7 @@ Each criterion has one observable behavior and an owning module.
 
 1. **[config]** Given a config with at least one valid alias, repo ID, and GGUF filename, startup registers that alias in `/v1/models`.
 2. **[config]** Given a missing required field or duplicate alias, startup fails with a message naming the invalid field or alias.
-3. **[gitignore]** `.gitignore` contains `models/` and `.cache/`, and `git check-ignore models/ .cache/responses/` reports both paths as ignored.
+3. **[gitignore]** `.gitignore` contains `models/` and `.cache/`, and `git check-ignore models/ .cache/responses/` reports both paths as ignored. `docker compose --profile serve up -d api` was smoke-tested with placeholder GGUF files and `/health` returned `{"status":"ok"}` from inside the container.
 4. **[downloader]** Given a configured model whose GGUF file is absent, startup invokes the Hugging Face CLI and writes the file under `models/<alias>/`.
 5. **[downloader]** Given a configured model whose GGUF file already exists, startup does not invoke the Hugging Face CLI.
 6. **[downloader]** Given a gated/private or non-public repo, the downloader rejects it before downloading and returns a clear reason.
@@ -510,7 +510,7 @@ Each criterion has one observable behavior and an owning module.
 38. **[llama-config]** Given a model-level or request-level llama option override, the effective value differs from the default and is the one passed to `Llama(...)`.
 39. **[opencode]** OpenCode model entries use `limit` singular and `body.options`; no `limits` or top-level `options` keys are present.
 40. **[docker]** `docker compose run --rm tests` runs the full test suite in the Miniconda container.
-41. **[docker]** `docker compose --profile serve up -d api` starts the API container with `models/` and `.cache/responses/` mounted as persistent volumes.
+41. **[docker]** `docker compose --profile serve up -d api` starts the API container with `models/` and `.cache/responses/` mounted as persistent volumes. **Status: verified with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container.**
 42. **[docker]** No development or verification step in the runbook invokes host Python or host conda.
 43. **[generation-config]** Given default OpenCode and YAML config, generation uses `temperature: 0.1`, `top_p: 0.2`, `top_k: 20`, `min_p: 0.08`, and `repeat_penalty: 1.1`.
 

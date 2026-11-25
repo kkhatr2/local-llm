@@ -39,11 +39,17 @@ class _FakePreflight:
 
 
 class _FakeLock:
+    def __init__(self) -> None:
+        self.available = True
+        self.acquire_calls = 0
+        self.release_calls = 0
+
     def acquire(self, timeout=None) -> bool:
-        return True
+        self.acquire_calls += 1
+        return self.available
 
     def release(self) -> None:
-        return None
+        self.release_calls += 1
 
 
 class _RuntimeStub:
@@ -101,6 +107,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.downloader = _FakeDownloader()
         self.preflight = _FakePreflight()
         self.runtime = _RuntimeStub()
+        self.lock = _FakeLock()
         self.services = Services(
             settings=self.settings,
             root=self.root,
@@ -109,7 +116,7 @@ class AdminRoutesTests(unittest.TestCase):
             downloader=self.downloader,
             preflight=self.preflight,
             runtime=self.runtime,
-            lock=_FakeLock(),
+            lock=self.lock,
         )
         path = self.downloader.download(existing, self.root)
         self.registry.mark_downloaded(existing.alias, path)
@@ -197,6 +204,8 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"alias": "alias-a", "unloaded": True})
         self.assertEqual(self.runtime.unload_calls, 1)
+        self.assertEqual(self.lock.acquire_calls, 1)
+        self.assertEqual(self.lock.release_calls, 1)
         self.assertFalse(self.runtime.loaded)
         self.assertEqual(
             self.registry.get("alias-a").state, ModelState.UNLOADED
@@ -208,6 +217,8 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"alias": "alias-a", "unloaded": False})
         self.assertEqual(self.runtime.unload_calls, 0)
+        self.assertEqual(self.lock.acquire_calls, 1)
+        self.assertEqual(self.lock.release_calls, 1)
         self.assertEqual(
             self.registry.get("alias-a").state, ModelState.DOWNLOADED
         )

@@ -197,6 +197,10 @@ class ChatRoutesTests(unittest.TestCase):
 
     def test_repeated_request_returns_cache_without_runtime(self) -> None:
         first = self.client.post(self._url(), json=self.body)
+
+        self.preflight.load_calls.clear()
+        self.preflight.download_calls.clear()
+        self.downloader.calls.clear()
         self.runtime.load_calls.clear()
         self.runtime.chat_calls.clear()
         self.runtime.unload_calls = 0
@@ -204,6 +208,9 @@ class ChatRoutesTests(unittest.TestCase):
         second = self.client.post(self._url(), json=self.body)
 
         self.assertEqual(second.json(), first.json())
+        self.assertEqual(self.preflight.load_calls, [])
+        self.assertEqual(self.preflight.download_calls, [])
+        self.assertEqual(self.downloader.calls, [])
         self.assertEqual(self.runtime.load_calls, [])
         self.assertEqual(self.runtime.chat_calls, [])
         self.assertEqual(self.runtime.unload_calls, 0)
@@ -223,6 +230,23 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertEqual(len(self.runtime.load_calls), 1)
         self.assertEqual(self.runtime.chat_calls[0]["temperature"], 0.9)
         self.assertEqual(len(self._cache_files()), 2)
+
+    def test_missing_file_downloads_once_then_sampling_change_is_cache_miss(
+        self,
+    ) -> None:
+        first = self.client.post(self._url(), json=self.body)
+        self.assertEqual(first.status_code, 200)
+
+        second = self.client.post(
+            self._url(), json={**self.body, "temperature": 0.9}
+        )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(
+            second.json()["choices"][0]["message"]["content"], "temp=0.9"
+        )
+        self.assertEqual(len(self.downloader.calls), 1)
+        self.assertEqual(len(self.preflight.download_calls), 1)
 
     def test_streaming_cache_miss_emits_sse_and_unloads(self) -> None:
         response = self.client.post(
