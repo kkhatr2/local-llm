@@ -56,10 +56,6 @@ def canonical_json(value: Any) -> str:
     )
 
 
-def sha256_json(value: Any) -> str:
-    return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
-
-
 def weight_fingerprint(path: Path | str) -> str:
     """Return a cheap fingerprint that changes when a GGUF file is replaced."""
 
@@ -76,12 +72,11 @@ def make_cache_key(
     params: Mapping[str, Any] | None = None,
     runtime: Mapping[str, Any] | None = None,
 ) -> str:
-    """Build a stable cache key from the full normalized model run request."""
+    """Build a stable cache key from a validated run request.
 
-    if not alias:
-        raise ValueError("alias is required")
-    if not fingerprint:
-        raise ValueError("fingerprint is required")
+    `alias` comes from the registry and `fingerprint` from `weight_fingerprint`;
+    both are non-empty by contract and are not re-checked here.
+    """
 
     normalized_params = {
         key: value
@@ -103,7 +98,7 @@ def make_cache_key(
         "params": normalized_params,
         "runtime": normalized_runtime,
     }
-    return sha256_json(payload)
+    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
@@ -281,8 +276,7 @@ class ResponseCache:
         except OSError:
             pass
 
-        response = entry.get("response")
-        return response if isinstance(response, Mapping) else None
+        return entry.get("response")
 
     def put(
         self,
@@ -363,21 +357,10 @@ class ResponseCache:
 
         return removed
 
-    def clear(self) -> int:
-        if not self.dir.exists():
-            return 0
-
-        removed = 0
-        for pattern in ("*.json", ".*.tmp"):
-            for path in self.dir.glob(pattern):
-                if self._delete(path):
-                    removed += 1
-        return removed
-
     def _read_entry(self, path: Path) -> dict[str, Any] | None:
         try:
             raw = path.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError):
             return None
 
         try:
@@ -433,6 +416,5 @@ __all__ = [
     "ResponseCache",
     "iter_sse_frames",
     "make_cache_key",
-    "sha256_json",
     "weight_fingerprint",
 ]

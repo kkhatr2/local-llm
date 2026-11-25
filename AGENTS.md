@@ -44,7 +44,7 @@ If these documents disagree with implementation comments, update the documents f
 
 - Implemented: `local_llm/cache.py`, cache tests, Docker artifacts, `local_llm.yaml`, OpenCode local provider configuration, `AGENTS.md`, and `docs/architecture.md`.
 - Pending: full FastAPI scaffold, downloader, registry, preflight, runtime adapter, admin routes, and chat route integration.
-- Unverified: containerized test run. Docker daemon returned HTTP 500 when last attempted.
+- Verified: `docker compose run --rm tests` passes all 9 cache tests inside the Miniconda container.
 
 ## Definition of done
 

@@ -163,7 +163,6 @@ classDiagram
         +put(key, alias, revision, response) bool
         +replay_sse(response) Iterator
         +evict() int
-        +clear() int
     }
 
     class ErrorMapper {
@@ -303,6 +302,7 @@ flowchart TB
 - I/O, clocks, randomness, subprocess calls, and retries stay at explicit edges.
 - Response cache lookup happens before preflight and runtime load.
 - Cache keys include request `options`; changing `n_ctx`, `n_batch`, `flash_attn`, `temperature`, `top_p`, `top_k`, `min_p`, or `repeat_penalty` produces a different key.
+- `make_cache_key` receives a validated alias from the registry and a fingerprint from `weight_fingerprint`; both are non-empty by contract and are not re-checked inside the cache.
 - No component reads host Python or host conda state.
 - All persistent state is through the two mounted volumes and the read-only config file.
 
