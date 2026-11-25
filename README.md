@@ -13,6 +13,7 @@ All development, testing, deployment, and operation must happen inside Docker co
 - `opencode.jsonc` — OpenCode providers for the local models.
 - `local_llm/cache.py` — implemented response cache.
 - `local_llm/config.py` — implemented configuration loader and immutable settings.
+- `local_llm/registry.py` — implemented in-memory model registry.
 - `tests/` — containerized test suite.
 - `AGENTS.md` — repository operating rules.
 - `docs/requirements.md` — approved requirements and acceptance criteria.
@@ -26,7 +27,7 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 16 cache and config tests and has been verified with this command.
+The full suite contains 24 cache, config, and registry tests and has been verified with this command.
 
 Configuration path: `LOCAL_LLM_CONFIG` selects the YAML file; an explicit path argument takes precedence, then the env var, then repo-root `local_llm.yaml`.
 

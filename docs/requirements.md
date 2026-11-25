@@ -1,8 +1,8 @@
 # Local LLM API requirements
 
-Status: **approved for MVP definition**. ConfigLoader is implemented and tested. No product-level blockers remain. Implementation handoff still requires the tech lead to close the implementation-owned assumptions listed below.
+Status: **approved for MVP definition**. ConfigLoader and ModelRegistry (C3) are implemented and tested. No product-level blockers remain. The tech lead has closed the implementation-owned assumptions listed below and recorded the decisions in `docs/architecture.md`.
 
-Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. The response-cache module and its tests are implemented and now pass inside the Docker test service; the full API scaffold is still pending. All future development, testing, deployment, and other execution must occur inside Docker containers only. Compose configuration was validated with the provided Docker Compose binary, and `docker compose run --rm tests` completed with `Ran 16 tests ... OK`.
+Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. The response-cache, config-loader, and model-registry modules and their tests pass inside the Docker test service; the full API scaffold is still pending. All future development, testing, deployment, and other execution must occur inside Docker containers only. Compose configuration was validated with the provided Docker Compose binary, and `docker compose run --rm tests` completed with `Ran 24 tests ... OK`.
 
 ## Original request
 
