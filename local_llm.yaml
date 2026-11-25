@@ -1,0 +1,69 @@
+server:
+  # The API listens on 0.0.0.0 inside the container so Docker can publish it.
+  # docker-compose.yml publishes only to 127.0.0.1 on the host.
+  host: 0.0.0.0
+  port: 8000
+
+paths:
+  model_dir: models
+  cache_dir: .cache/responses
+
+llama_defaults:
+  n_ctx: 16384
+  n_batch: 512
+  flash_attn: true
+  n_threads: 8
+  n_gpu_layers: 0
+  verbose: false
+
+generation_defaults:
+  temperature: 0.1
+  top_p: 0.2
+  top_k: 20
+  min_p: 0.08
+  repeat_penalty: 1.1
+  max_tokens: 512
+
+max_n_ctx: 32768
+
+cache:
+  enabled: true
+  dir: .cache/responses
+  ttl_days: 30
+  max_size_mb: 1024
+  replay_sse: true
+
+download:
+  command: huggingface-cli
+  timeout_seconds: 1800
+  public_only: true
+
+resources:
+  min_free_disk_gb: 10
+  reserve_disk_gb: 2
+  max_estimated_model_memory_gb: 6
+  reserve_system_memory_gb: 4
+  fail_closed: true
+
+models:
+  - alias: phi4-mini
+    enabled: true
+    repo_id: bartowski/microsoft_Phi-4-mini-instruct-GGUF
+    filename: microsoft_Phi-4-mini-instruct-Q4_K_M.gguf
+    revision: main
+    options:
+      n_ctx: 16384
+      n_batch: 512
+      flash_attn: true
+      n_threads: 8
+
+  - alias: qwen2.5-coder-3b
+    enabled: true
+    repo_id: Qwen/Qwen2.5-Coder-3B-Instruct-GGUF
+    filename: qwen2.5-coder-3b-instruct-q4_k_m.gguf
+    revision: main
+    options:
+      n_ctx: 16384
+      n_batch: 512
+      flash_attn: true
+      n_threads: 8

@@ -1,0 +1,49 @@
+services:
+  api:
+    build: .
+    profiles: ["serve"]
+    command: >-
+      uvicorn local_llm.api:app
+      --host 0.0.0.0
+      --port 8000
+    working_dir: /app
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      LOCAL_LLM_CONFIG: /app/local_llm.yaml
+      PYTHONPATH: /app
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    volumes:
+      - ./models:/app/models
+      - ./.cache:/app/.cache
+      - ./local_llm.yaml:/app/local_llm.yaml:ro
+
+  tests:
+    build: .
+    working_dir: /app
+    init: true
+    command: python -m unittest discover -s tests -v
+    environment:
+      LOCAL_LLM_CONFIG: /app/local_llm.yaml
+      PYTHONPATH: /app
+    volumes:
+      - ./local_llm.yaml:/app/local_llm.yaml:ro
+
+  dev:
+    build: .
+    working_dir: /app
+    init: true
+    stdin_open: true
+    tty: true
+    command: bash
+    environment:
+      LOCAL_LLM_CONFIG: /app/local_llm.yaml
+      PYTHONPATH: /app
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    volumes:
+      - ./models:/app/models
+      - ./.cache:/app/.cache
+      - ./local_llm.yaml:/app/local_llm.yaml:ro
+      - .:/workspace

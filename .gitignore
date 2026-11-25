@@ -1,2 +1,10 @@
-.opencode
-opencode.jsonc
+.opencode/
+models/
+.cache/
+.env
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
