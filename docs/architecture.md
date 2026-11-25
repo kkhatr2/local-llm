@@ -22,7 +22,7 @@ There are **14 modeled components**:
 | C7 | ChatRoutes | Application | Planned | Exposes `/health`, `/v1/models`, and `/v1/models/{alias}/chat/completions`. |
 | C8 | AdminRoutes | Application | Planned | Exposes runtime add, unload, and remove operations. |
 | C9 | ResponseCache | Application | Implemented | Stores completed responses, keys full normalized requests, evicts by TTL/size, and replays SSE. |
-| C10 | ErrorMapper | Application | Planned | Converts config, download, preflight, runtime, and validation failures into stable HTTP errors. |
+| C10 | ErrorMapper | Application | Implemented | Converts config, download, preflight, runtime, and validation failures into stable HTTP errors. |
 | C11 | DockerRuntime | Boundary | Implemented as files | Builds and runs the Miniconda image; publishes container port only on host loopback. |
 | C12 | OpenCodeClient | Boundary | Implemented as config | Calls each alias-specific OpenAI-compatible endpoint using `limit` and `body.options`. |
 | C13 | HuggingFaceCli | Boundary | External | Performs public model downloads inside the container. |
@@ -317,7 +317,7 @@ flowchart TB
 ## Verified and unverified
 
 - Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all response-cache, config-loader, model-registry, Hugging Face CLI downloader, and resource-preflight tests.
+- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, and error-mapping tests.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
 - Pending: API scaffold and integration of C1–C8 and C10 into the containerized service.
 
