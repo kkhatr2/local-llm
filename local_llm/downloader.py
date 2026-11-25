@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Callable
 
 from local_llm.config import DownloadSettings, ModelRecord, PathSettings
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DownloaderError(Exception):
@@ -56,13 +59,29 @@ class HfCliDownloader:
     def download(self, record: ModelRecord, root: Path | str) -> Path:
         destination = self._destination(record, root)
         if self.exists(record, root):
+            LOGGER.info(
+                "model already present: alias=%s repo_id=%s; skipping download",
+                record.alias,
+                record.repo_id,
+            )
             return destination
 
         if not self.repo_info(record.repo_id, record.revision):
+            LOGGER.error(
+                "model download rejected: alias=%s repo_id=%s reason=not_public",
+                record.alias,
+                record.repo_id,
+            )
             raise NonPublicRepoError(
                 f"repository is not public: {record.repo_id}"
             )
 
+        LOGGER.info(
+            "downloading model: alias=%s repo_id=%s filename=%s",
+            record.alias,
+            record.repo_id,
+            record.filename,
+        )
         destination.parent.mkdir(parents=True, exist_ok=True)
 
         command = [
@@ -79,24 +98,51 @@ class HfCliDownloader:
         try:
             return_code = self.runner(command, self.download_settings.timeout_seconds)
         except TimeoutError:
+            LOGGER.error(
+                "model download timed out: alias=%s repo_id=%s",
+                record.alias,
+                record.repo_id,
+            )
             raise DownloadTimeoutError(
                 f"download timed out for {record.repo_id}"
             ) from None
-        except Exception:
+        except Exception as exc:
+            LOGGER.error(
+                "model download failed: alias=%s repo_id=%s error=%s",
+                record.alias,
+                record.repo_id,
+                type(exc).__name__,
+            )
             raise DownloadCommandError(
                 f"download failed for {record.repo_id}"
             ) from None
 
         if return_code != 0:
+            LOGGER.error(
+                "model download failed: alias=%s repo_id=%s exit_code=%s",
+                record.alias,
+                record.repo_id,
+                return_code,
+            )
             raise DownloadCommandError(
                 f"download failed for {record.repo_id}"
             )
 
         if not self.exists(record, root):
+            LOGGER.error(
+                "downloaded file missing: alias=%s repo_id=%s",
+                record.alias,
+                record.repo_id,
+            )
             raise DownloadedFileMissingError(
                 f"downloaded file missing for {record.alias}"
             )
 
+        LOGGER.info(
+            "model download complete: alias=%s repo_id=%s",
+            record.alias,
+            record.repo_id,
+        )
         return destination
 
 

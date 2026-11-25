@@ -17,6 +17,7 @@ docker compose --profile serve config
 docker compose --profile serve up -d api
 
 # 3. Follow logs (Ctrl+C to detach, container keeps running).
+#    Startup status lines show downloading model, download complete, or already present.
 docker compose --profile serve logs -f api
 
 # 4. Stop and remove the API container; bind-mounted models/cache data persists.

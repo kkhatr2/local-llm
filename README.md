@@ -36,7 +36,7 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 88 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests and has been verified with this command.
+The full suite contains 89 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests and has been verified with this command.
 
 Configuration path: `LOCAL_LLM_CONFIG` selects the YAML file; an explicit path argument takes precedence, then the env var, then repo-root `local_llm.yaml`.
 
@@ -63,6 +63,8 @@ View logs:
 ```powershell
 docker compose --profile serve logs -f api
 ```
+
+Startup logs show download status for each enabled model: `downloading model: ...` while the CLI runs, `model download complete: ...` on success, and `model already present: ...; skipping download` when the GGUF already exists.
 
 Stop the API:
 
@@ -157,6 +159,6 @@ After editing OpenCode configuration, use `/reload` if the change is not picked 
 
 ## Verification evidence
 
-- `docker compose run --rm tests` passes all 88 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests inside the Miniconda container.
+- `docker compose run --rm tests` passes all 89 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests inside the Miniconda container.
 - `docker compose --profile serve config` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, and the host publish is loopback-only (`127.0.0.1:8000`), with a read-only config mount and local `models/` and `.cache/responses/` mounts. `docker compose --profile serve up -d api` was smoke-tested with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container. `git check-ignore -v models/ .cache/responses/` confirms both paths are ignored.
 - Real-model smoke test: **passed inside Docker**. `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`) downloaded with `hf`, startup reached `/health`, chat returned `200` with `acceptance ok`, and a repeat replayed the cached response. Downloaded weights and cache entries were removed after the test. Contract tests still use a fake Hugging Face CLI and fake Llama runtime; cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.

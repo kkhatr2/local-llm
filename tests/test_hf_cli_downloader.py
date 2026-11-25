@@ -53,7 +53,22 @@ class HfCliDownloaderTests(unittest.TestCase):
         self.assertTrue(result.is_file())
         self.assertGreater(result.stat().st_size, 0)
 
-    def test_existing_file_skips_runner(self) -> None:
+    def test_download_logs_start_and_completion(self) -> None:
+        def runner(command: list[str], timeout: int) -> int:
+            local_dir = Path(command[command.index("--local-dir") + 1])
+            (local_dir / self.record.filename).write_bytes(b"gguf")
+            return 0
+
+        downloader = HfCliDownloader(runner=runner, repo_info=lambda *_: True)
+
+        with self.assertLogs("local_llm.downloader", level="INFO") as captured:
+            downloader.download(self.record, self.root)
+
+        logs = "\n".join(captured.output)
+        self.assertIn("downloading model: alias=alpha", logs)
+        self.assertIn("model download complete: alias=alpha", logs)
+
+    def test_existing_file_skips_runner_and_logs_skip(self) -> None:
         self.destination.parent.mkdir(parents=True)
         self.destination.write_bytes(b"gguf")
 
@@ -62,7 +77,10 @@ class HfCliDownloaderTests(unittest.TestCase):
 
         downloader = HfCliDownloader(runner=fail, repo_info=fail)
 
-        self.assertEqual(downloader.download(self.record, self.root), self.destination)
+        with self.assertLogs("local_llm.downloader", level="INFO") as captured:
+            self.assertEqual(downloader.download(self.record, self.root), self.destination)
+
+        self.assertIn("skipping download", "\n".join(captured.output))
 
     def test_non_public_repo_rejects_before_runner(self) -> None:
         def fail_runner(*_args: object, **_kwargs: object) -> None:

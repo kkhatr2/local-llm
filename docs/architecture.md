@@ -317,8 +317,8 @@ flowchart TB
 
 - Verified: `docker compose config` and `docker compose --profile serve config` parse successfully with the provided Docker Compose binary. `docker compose --profile serve config` confirms the API command `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, loopback-only host publishing (`host_ip: 127.0.0.1`, `published: "8000"`, `target: 8000`), a read-only config mount, and local model/cache mounts.
 - Verified: the production ASGI entry point `local_llm.api:app` is exposed as `app = build_app()` in `local_llm/api.py`; `local_llm/composition.py` uses FastAPI lifespan startup wiring and no deprecated `on_event` hook.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 88 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests.
-- Verified: `docker compose --profile serve up -d api` started the API container with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container.
+- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 89 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, and composition tests.
+- Verified: `docker compose --profile serve up -d api` started the API container with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container and logs showed per-model download-skip status.
 - Verified: `git check-ignore -v models/ .cache/responses/` reports `.gitignore:2:models/` and `.gitignore:3:.cache/`.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
 - Verified: a real-model smoke test passed inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`). `hf download` restored the GGUF, startup reached `/health`, chat returned `200`, and a repeat replayed the cached response; weights and cache entries were removed afterward.

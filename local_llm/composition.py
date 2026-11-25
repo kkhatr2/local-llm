@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import threading
 from contextlib import asynccontextmanager
@@ -36,6 +37,20 @@ class Services:
     preflight: Any
     runtime: Any
     lock: Any
+
+
+def configure_logging() -> None:
+    """Emit application status messages in container logs."""
+
+    package_logger = logging.getLogger("local_llm")
+    package_logger.setLevel(logging.INFO)
+    if not package_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        package_logger.addHandler(handler)
+    package_logger.propagate = False
 
 
 def _json_error(mapped: MappedError) -> JSONResponse:
@@ -199,6 +214,7 @@ def build_app(
 __all__ = [
     "Services",
     "build_app",
+    "configure_logging",
     "create_app",
     "install_error_handlers",
 ]
