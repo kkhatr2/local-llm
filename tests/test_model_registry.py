@@ -28,7 +28,7 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertEqual([record.alias for record in records], ["alpha", "beta"])
         self.assertTrue(all(isinstance(record, ModelRecord) for record in records))
 
-    def test_list_and_get_never_expose_local_paths(self) -> None:
+    def test_list_records_and_get_record_never_expose_local_paths(self) -> None:
         registry = ModelRegistry([make_record("alpha")])
         registry.mark_downloaded("alpha", Path("/tmp/secret/model.gguf"))
 
