@@ -5,7 +5,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from local_llm.composition import build_app
+from local_llm.composition import _download_configured_models, build_app
 from local_llm.preflight import ResourceError
 from local_llm.registry import ModelState
 
@@ -23,6 +23,22 @@ class _FakePreflight:
 
     def check_load(self, model_path) -> None:
         self.load_calls.append(Path(model_path))
+
+
+class _TrackingLock:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.held = False
+
+    def acquire(self, timeout=None) -> bool:
+        acquired = self._lock.acquire(timeout=timeout)
+        if acquired:
+            self.held = True
+        return acquired
+
+    def release(self) -> None:
+        self.held = False
+        self._lock.release()
 
 
 class _FakeLlama:
@@ -185,6 +201,94 @@ models:
             {command[2] for command in commands},
             {"owner/model-a", "owner/model-b"},
         )
+
+    def test_startup_downloads_respect_configured_parallel_bound(self) -> None:
+        config = self.config_text.replace(
+            "models:\n",
+            "download:\n  max_parallel_downloads: 2\nmodels:\n",
+            1,
+        ).replace(
+            "  - alias: alias-b\n    repo_id: owner/model-b\n    filename: model-b.gguf\n",
+            "  - alias: alias-b\n    repo_id: owner/model-b\n    filename: model-b.gguf\n"
+            "  - alias: alias-c\n    repo_id: owner/model-c\n    filename: model-c.gguf\n",
+            1,
+        )
+        self.config_path.write_text(config, encoding="utf-8")
+
+        guard = threading.Lock()
+        starts: list[str] = []
+        active = 0
+        max_active = 0
+        two_started = threading.Event()
+        release = threading.Event()
+
+        def runner(command, timeout):
+            nonlocal active, max_active
+            repo_id = command[2]
+            with guard:
+                starts.append(repo_id)
+                active += 1
+                max_active = max(max_active, active)
+                if len(starts) == 2:
+                    two_started.set()
+            if not release.wait(timeout=10):
+                raise TimeoutError("download release timed out")
+            filename = command[3]
+            local_dir = Path(command[command.index("--local-dir") + 1])
+            local_dir.mkdir(parents=True, exist_ok=True)
+            (local_dir / filename).write_bytes(b"fake-gguf")
+            with guard:
+                active -= 1
+            return 0
+
+        app = self._build(runner=runner)
+        holder = {}
+
+        def serve() -> None:
+            with TestClient(app) as client:
+                holder["response"] = client.get("/v1/models")
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        try:
+            self.assertTrue(two_started.wait(timeout=10))
+            with guard:
+                self.assertEqual(len(starts), 2)
+                self.assertEqual(max_active, 2)
+        finally:
+            release.set()
+        thread.join(timeout=10)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(holder["response"].status_code, 200)
+        with guard:
+            self.assertEqual(len(starts), 3)
+            self.assertEqual(max_active, 2)
+
+    def test_startup_download_does_not_hold_lifecycle_lock(self) -> None:
+        config = self.config_text.replace(
+            "models:\n",
+            "download:\n  max_parallel_downloads: 1\nmodels:\n",
+            1,
+        )
+        self.config_path.write_text(config, encoding="utf-8")
+        lock = _TrackingLock()
+        app = self._build(startup_download=False, lock=lock)
+        services = app.state.services
+        observed: list[bool] = []
+        original = services.downloader.download
+
+        def tracking_download(record, root):
+            observed.append(lock.held)
+            return original(record, root)
+
+        services.downloader.download = tracking_download
+        _download_configured_models(services)
+
+        self.assertEqual(observed, [False, False])
+        for alias in ("alias-a", "alias-b"):
+            self.assertEqual(
+                services.registry.get(alias).state, ModelState.DOWNLOADED
+            )
 
     def test_startup_preflight_failure_fails_closed(self) -> None:
         self.preflight.fail_download = True

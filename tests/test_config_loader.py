@@ -134,6 +134,18 @@ class ConfigLoaderTests(unittest.TestCase):
 
         self.assertEqual(settings.download.max_parallel_downloads, 4)
 
+    def test_download_max_parallel_downloads_accepts_bounds(self) -> None:
+        for good_value in (1, 16):
+            good = VALID_YAML.replace(
+                "llama_defaults:\n",
+                f"download:\n  max_parallel_downloads: {good_value}\nllama_defaults:\n",
+                1,
+            )
+
+            settings = ConfigLoader(env={}, reader=lambda _: good).load()
+
+            self.assertEqual(settings.download.max_parallel_downloads, good_value)
+
     def test_download_max_parallel_downloads_rejects_out_of_bounds(self) -> None:
         for bad_value in (0, 17):
             bad = VALID_YAML.replace(

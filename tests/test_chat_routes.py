@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from local_llm.cache import CacheConfig, ResponseCache
 from local_llm.chat_routes import _resolve_path
+from local_llm.downloader import DownloaderError
 from local_llm.composition import Services, create_app
 from local_llm.config import ModelRecord, Settings
 from local_llm.locking import AliasDownloadLocks
@@ -23,6 +24,7 @@ class _FakeDownloader:
         self.calls = []
         self.lock = lock
         self.lock_held_during_download: list[bool] = []
+        self.fail_download = False
 
     def exists(self, record, root) -> bool:
         path = Path(root) / "models" / record.alias / record.filename
@@ -32,6 +34,8 @@ class _FakeDownloader:
         self.calls.append(record.alias)
         if self.lock is not None:
             self.lock_held_during_download.append(self.lock.held)
+        if self.fail_download:
+            raise DownloaderError("download failed")
         time.sleep(0.02)
         path = Path(root) / "models" / record.alias / record.filename
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -527,6 +531,34 @@ class ChatRoutesTests(unittest.TestCase):
         )
         self.assertEqual(self.runtime.load_calls, [])
         self.assertEqual(self._cache_files(), [])
+
+    def test_restore_preflight_failure_returns_503_without_download(self) -> None:
+        self.preflight.fail_download = True
+
+        response = self.client.post(self._url(), json=self.body)
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json()["error"]["code"], "resource_unavailable"
+        )
+        self.assertEqual(self.downloader.calls, [])
+        self.assertEqual(self.runtime.load_calls, [])
+        entry = self.registry.get("alias-a")
+        self.assertEqual(entry.state, ModelState.REGISTERED)
+        self.assertIsNone(entry.path)
+
+    def test_download_failure_keeps_registry_registered(self) -> None:
+        self.downloader.fail_download = True
+
+        response = self.client.post(self._url(), json=self.body)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["error"]["code"], "download_error")
+        self.assertEqual(self.downloader.calls, ["alias-a"])
+        entry = self.registry.get("alias-a")
+        self.assertEqual(entry.state, ModelState.REGISTERED)
+        self.assertIsNone(entry.path)
+        self.assertEqual(self.runtime.load_calls, [])
 
     def test_unknown_alias_returns_stable_404(self) -> None:
         response = self.client.post(self._url("missing"), json=self.body)
