@@ -137,6 +137,22 @@ cache:
 
 Cache files are ignored by Git.
 
+`.cache/responses/` may contain response text and any user content echoed by the model; the prompt participates in the SHA-256 key but is not stored verbatim. Treat the directory as sensitive local data, restrict filesystem access to the container/host owner, and do not put secrets in prompts. The 30-day TTL and 1 GiB cap are retention limits, not encryption.
+
+## Security and top-seven plan
+
+The 2026-11-27 plan for the seven most desirable features keeps behavior unchanged: full-request cache with no bypass, loopback-only exposure without auth, fail-closed preflight, lazy load/unload, Docker-only execution, `private.txt` → `HF_TOKEN` injection, and no 7B cap. The baseline commit `3d7e43a` was pushed to `origin/main` before the plan was written.
+
+Security boundaries for this plan:
+
+- `127.0.0.1:8000` is the only host publish. Every local host process is trusted; do not publish the API on `0.0.0.0` or a LAN address.
+- Admin `POST /admin/models` is a synchronous public-model download. Prefer startup-configured aliases, keep the configured timeout, and rely on disk/RAM preflight; async jobs and approved-alias gating are deferred.
+- `DELETE /admin/models/{alias}` unregisters only. Call the unload endpoint first if an in-memory instance must be released.
+- Use `docker compose --profile serve config --no-interpolate` when sharing configuration; plain `docker compose config` resolves and prints `HF_TOKEN`.
+- Auth/rate limiting, non-root container, cache encryption, content-hash fingerprints, and concurrent generation are deferred product decisions under `ASSUMPTION-17`.
+
+See `docs/requirements.md` for `AC-49` through `AC-56` and `docs/architecture.md` for the component/security boundary mapping.
+
 ## OpenCode configuration
 
 Each local model is exposed through its own custom provider because each alias has its own endpoint.

@@ -316,6 +316,20 @@ flowchart TB
 - `HF_TOKEN` is injected by C11 from `private.txt` into the container environment; C4/C13 never receive it as a CLI argument and no component logs its value.
 - All persistent state is through the two mounted volumes and the read-only config file.
 
+## Security boundary and top-seven plan
+
+The baseline for this plan was pushed to `origin/main` as `3d7e43a` before any planning or implementation work. Tech Lead, Delivery Manager, and Security Engineer reviews converge on one decision: items 1–7 already exist, so this pass preserves their contracts and hardens the documentation/verification boundary instead of changing runtime behavior.
+
+| Concern | Preserved component contract | Mitigation in this plan | Residual / decision |
+|---|---|---|---|
+| Unauthenticated local chat and admin routes | C7/C8 route contracts; C11 publishes only host `127.0.0.1:8000` | Loopback is the trust boundary; do not publish `0.0.0.0` on the host; keep stable `422`/`502`/`503` envelopes | Any local host process is trusted; auth, rate limiting, and approved-alias gating are deferred under `ASSUMPTION-17` |
+| Plaintext response data at rest | C9 writes one completed-response JSON per cache key under `.cache/responses/` | Document response-text sensitivity, 30-day TTL, 1 GiB cap, and filesystem access restriction; do not put secrets in prompts | Encryption and shorter TTL are deferred; prompt text participates in the SHA-256 key but is not stored verbatim |
+| Cache staleness after a same-size GGUF swap | C9 fingerprint is `size:mtime_ns` from C3/C6 | Keep alias/revision and fingerprint in the key; document immutable-weight assumption | Content hash/versioned alias is deferred |
+| Local disk exhaustion from synchronous admin downloads | C8 `POST /admin/models`, C4 downloader, C5 disk preflight | Prefer startup-configured models; keep configured download timeout and disk fail-closed preflight | Async queue and admin gating are deferred |
+| Token exposure through Compose output or logs | C11 injects `HF_TOKEN` from `private.txt`; C4 uses `hf` without token CLI arguments | Keep `env_file`, gitignore/dockerignore, and mandate `--no-interpolate` when sharing config | Plain `docker compose config` still prints the resolved token; operational discipline remains required |
+| Root container process | C11 Dockerfile/Compose boundary | No runtime behavior change in this pass; keep read-only config mounts and no host runtime dependencies | Non-root `USER` is deferred pending Windows bind-mount ownership verification under `ASSUMPTION-17` |
+| Lock contention / head-of-line blocking | C6/C7 process-wide lock; `server.lock_timeout_seconds: 600`; `503` on contention | Document the wait and stable error; keep OpenCode 96-token cap | Concurrent generation and multi-model residency are deferred |
+
 ## Verified and unverified
 
 - Verified: `docker compose config` and `docker compose --profile serve config --no-interpolate` parse successfully with the provided Docker Compose binary. The no-interpolate form confirms the API command `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, loopback-only host publishing (`host_ip: 127.0.0.1`, `published: "8000"`, `target: 8000`), `env_file` wiring for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`.
@@ -350,3 +364,10 @@ The tech lead closed `ASSUMPTION-1` through `ASSUMPTION-16`. Closing a decision 
 | `ASSUMPTION-14` | `flash_attn` is passed as configured; runtime rejection maps to a sanitized `502`. | C6 / C10 |
 | `ASSUMPTION-15` | Chat accepts OpenAI fields plus `options`. Load merge: `llama_defaults` → model `options` → request `options`. Sampling merge: `generation_defaults` → model `options` sampling keys → request top-level fields → request `options` sampling keys. | C6 / C7 |
 | `ASSUMPTION-16` | No committed lock file yet; generate it from inside Docker before production deployment. | C11 boundary (deferred) |
+
+## Open decision for the top-seven plan
+
+| ID | Open assumption | Owner | Required decision |
+| --- | --- | --- | --- |
+| `ASSUMPTION-17` | Loopback-only exposure, token hygiene, cache-retention guidance, and Docker-only execution are sufficient cybersecurity mitigations for a trusted single-user host. | Product Lead + Security Engineer | Confirm the host is trusted and single-user. If shared or remotely reachable, add auth/rate limiting, non-root container, and cache encryption as follow-up scope before implementation. |
+

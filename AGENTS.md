@@ -6,7 +6,7 @@ Local LLM API: a localhost-only OpenAI-compatible service that downloads public 
 
 ## Authoritative documents
 
-- `docs/requirements.md` — approved scope, decisions, assumptions, and acceptance criteria.
+- `docs/requirements.md` — approved scope, decisions, assumptions, acceptance criteria, and the current change plan.
 - `docs/architecture.md` — UML component, class, sequence, and deployment views.
 - `local_llm.yaml` — runtime configuration source of truth.
 - `README.md` — operating commands.
@@ -27,7 +27,8 @@ If these documents disagree with implementation comments, update the documents f
 
 - Preserve the loopback-only host exposure.
 - Keep model weights in `models/<alias>/`; never commit them.
-- Keep cached responses in `.cache/responses/`; never commit them.
+- Keep cached responses in `.cache/responses/`; never commit them. Treat that directory as sensitive response data and restrict filesystem access.
+- Use `docker compose --profile serve config --no-interpolate` when sharing Compose output; plain `docker compose config` resolves and prints `HF_TOKEN`.
 - GGUF only. Do not add conversion pipelines in MVP.
 - Do not enforce a 7B parameter cap. The user verifies model size before load.
 - Resource preflight must fail closed using configurable RAM/disk thresholds.
@@ -49,6 +50,7 @@ If these documents disagree with implementation comments, update the documents f
 - Implemented: `local_llm/cache.py`, `local_llm/config.py`, `local_llm/registry.py`, `local_llm/downloader.py`, `local_llm/preflight.py`, `local_llm/runtime.py`, `local_llm/error_mapper.py`, `local_llm/locking.py`, `local_llm/chat_routes.py`, `local_llm/admin_routes.py`, `local_llm/composition.py`, `local_llm/api.py` (production ASGI entry point, `app = build_app()`), cache tests, config tests, registry tests, downloader tests, resource-preflight tests, runtime tests, error-mapping tests, chat-route tests, admin-route tests, composition tests, OpenCode-config tests, container-environment tests, Docker artifacts, `local_llm.yaml`, OpenCode local provider configuration, `AGENTS.md`, and `docs/architecture.md`.
 - Decisions closed: `ASSUMPTION-1`–`ASSUMPTION-16` are recorded in `docs/architecture.md`; closing a decision is not an implementation claim.
 - No application components are pending for MVP. Only deferred, non-MVP items remain in `docs/requirements.md` (for example, the committed dependency lock file from `ASSUMPTION-16`).
+- Top-seven hardening plan: baseline `3d7e43a Baseline local API and OpenCode configuration` was pushed to `origin/main` before planning; `AC-49`–`AC-56` are documentation/verification gates with no runtime behavior change; `ASSUMPTION-17` remains open.
 - Verified: `docker compose run --rm tests` passes all 95 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests inside the Miniconda container, including a captured model output for `what is your name, respond using minimal tokens?`. `docker compose --profile serve config --no-interpolate` confirms the `local_llm.api:app` command, `env_file` wiring, and loopback-only host publish without printing `HF_TOKEN`. An API container startup smoke with placeholder GGUF files returned `{"status":"ok"}` from `/health` and logged per-model download status. A token-authenticated real-model smoke then downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` with `hf` without the unauthenticated warning; `/health`, `/v1/models`, and chat returned `200` from host loopback with content `I am Qwen.` for the prompt, repeat replayed the cached response, admin unload returned `200`, admin delete returned `204`, and weights/cache entries were removed afterward.
 
 ## Definition of done
@@ -60,3 +62,4 @@ A change is done only when:
 3. No model weights or cache files are staged or committed.
 4. Docs are updated instead of leaving stale instructions.
 5. OpenCode configuration still validates and uses supported V2 fields.
+6. For the top-seven hardening plan, documentation changes are verified by `AC-49`–`AC-56` without changing runtime behavior, and `ASSUMPTION-17` is not silently closed.

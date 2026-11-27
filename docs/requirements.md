@@ -165,6 +165,24 @@ A localhost-only API that:
 - Host-local Python or conda execution for development, testing, deployment, or other tasks after `DECISION-18`.
 - OpenCode key spellings `limits` and top-level `options`, because OpenCode V2 documents `limit` and provider options through `settings`/`headers`/`body`.
 
+## Top-seven hardening plan
+
+Status: **planning baseline committed and pushed; no implementation has started**. Baseline: `3d7e43a Baseline local API and OpenCode configuration` was pushed to `origin/main` before this plan was written.
+
+Lead input: Tech Lead found items 1–7 already implemented and recommended a verification, security, and documentation pass rather than new application logic. Delivery Manager confirmed the shortest sequence is baseline → documented mitigations → Docker verification. Security Engineer identified the loopback trust boundary, plaintext cache data, local admin download surface, token-leakage footgun, root container, and lock contention as the reachable risks. This plan preserves the seven features and resolves those inputs conservatively: no new runtime behavior in this pass, explicit mitigations and residual decisions in the docs, and verification through the existing Docker gates.
+
+| Item | Feature preserved | Cybersecurity mitigation / boundary | Gate |
+|---:|---|---|---|
+| 1 | Full-request response cache with no bypass; TTL 30 days and 1 GiB cap | Treat `.cache/responses/` as sensitive response data; restrict filesystem access to the container/host owner; do not put secrets in prompts. The prompt participates in the SHA-256 key but is not stored verbatim. No cache bypass or encryption is added in this quick pass. | `AC-49` |
+| 2 | Host loopback-only exposure without auth | Keep `127.0.0.1:8000` as the only host publish; never change it to `0.0.0.0`. Loopback is the trust boundary: any local host process is trusted. Auth, LAN binding, and external-IP request guards are rejected for this pass. | `AC-50` |
+| 3 | Fail-closed RAM/disk preflight | Keep configurable thresholds, disk check before download, RAM check before load, and no model bytes/load on failure. Do not replace threshold failures with warnings. | `AC-51` |
+| 4 | Lazy load on first call and unload after response/SSE `[DONE]` | Keep the process-wide lock and `server.lock_timeout_seconds: 600`; contention stays `503`. Serialized generation bounds memory but permits head-of-line blocking; concurrent generation remains deferred. | `AC-52` |
+| 5 | Docker-only execution | Use only `docker compose run --rm tests`, `docker compose run --rm dev`, and `docker compose --profile serve up -d api`. No host Python, host conda, or host uvicorn. Keep read-only config mounts. | `AC-53` |
+| 6 | `private.txt` → `HF_TOKEN` injection | Keep `env_file` for `api`, `tests`, and `dev`; keep the file gitignored/dockerignored; never copy it into the image, pass it as a CLI argument, or log it. Always use `--no-interpolate` when sharing Compose config. | `AC-54` |
+| 7 | No 7B cap; user verifies model size | Keep config validation free of parameter-count rejection. Resource preflight remains the guardrail; documentation keeps size verification with the user. | `AC-55` |
+
+Cross-cutting gate: `AC-56` verifies the baseline, tests, Compose config, and ignored state. Deferred product decisions, **not** implemented by this quick change: authentication/rate limiting/approved-alias gating for admin downloads, non-root container (Windows bind-mount permission impact), cache encryption or shorter TTL, content-hash GGUF fingerprints, committed dependency lock, and concurrent generation. These require product confirmation before scope expansion. No new tests are added by this documentation-only pass; `AC-49` through `AC-56` are the observable gates.
+
 ## Configuration recommendation
 
 Use four configuration layers:
@@ -483,6 +501,7 @@ These product-level assumptions were closed by the tech lead. The concrete decis
 | `ASSUMPTION-14` | The installed `llama-cpp-python` version supports `flash_attn`. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-15` | OpenCode sends runtime llama options through `body.options`. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-16` | Miniconda base image plus `environment.yaml` is sufficient until a committed lock file is generated. | Tech Lead + Delivery Manager | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-17` | For the top-seven hardening plan, loopback-only exposure, token hygiene, cache-retention guidance, and Docker-only execution are sufficient cybersecurity mitigations for a trusted single-user host. | Product Lead + Security Engineer | **Open:** if the host is shared or remotely reachable, auth/rate limiting, non-root container, and cache encryption become required follow-up scope. |
 
 ## Acceptance criteria
 
@@ -536,6 +555,14 @@ Each criterion has one observable behavior and an owning module.
 46. **[docker]** The API endpoints are reachable from the host loopback address: `GET /health`, `GET /v1/models`, and `POST /v1/models/{alias}/chat/completions`. **Status: verified** with the real-model smoke inside Docker.
 47. **[config]** Given default config, the process-wide lifecycle lock waits `server.lock_timeout_seconds` seconds, and the value is configurable in `local_llm.yaml`. **Status: verified** by config and route contract tests.
 48. **[opencode]** Every local OpenCode provider caps output at 96 tokens in both `limit.output` and `body.options.max_tokens`. **Status: verified** by OpenCode-config contract tests.
+49. **[plan/cache]** This plan documents that the cache has no per-request bypass; an existing cache test repeats a normalized request without invoking the fake Llama runtime, and README states that `.cache/responses/` may contain response text and must be access-restricted with `ttl_days: 30` and `max_size_mb: 1024` as retention limits.
+50. **[plan/security]** This plan documents that Compose publishes only `127.0.0.1:8000`, no auth is added, and any local host process is trusted; `docker compose --profile serve config --no-interpolate` shows `host_ip: 127.0.0.1` and no `0.0.0.0` host publish.
+51. **[plan/preflight]** Existing preflight tests still pass and this plan documents that insufficient disk or RAM fails closed with `503`, writes no model bytes, and loads no model.
+52. **[plan/runtime]** Existing runtime and route tests still pass and this plan documents lazy load/unload after non-streaming completion and SSE `[DONE]`, with `server.lock_timeout_seconds: 600` and `503` on contention.
+53. **[plan/docker]** README and `AGENTS.md` show only Docker Compose commands for tests, dev shell, and deployment, with no host Python, host conda, or host uvicorn command.
+54. **[plan/token]** `docker compose --profile serve config --no-interpolate` shows `env_file` for `api`, `tests`, and `dev`; `git check-ignore -v private.txt` passes; docs require `--no-interpolate`, and no token value appears in logs, CLI arguments, or the image.
+55. **[plan/size]** This plan documents that no model is rejected solely for unknown or greater-than-7B parameter count, the user verifies size before load, and RAM/disk preflight remains the only automated guardrail.
+56. **[plan/verification]** Baseline commit `3d7e43a` was pushed to `origin/main` before this plan; `docker compose run --rm tests` passes all 95 tests; `docker compose --profile serve config --no-interpolate` succeeds; `git check-ignore -v private.txt models/ .cache/responses/` passes; no weights or cache files are staged; requirements, architecture, API runbook, and README are updated together.
 
 ## Delivery sequence
 
@@ -554,4 +581,4 @@ Each criterion has one observable behavior and an owning module.
 
 ## Next step
 
-MVP implementation is complete, including the C1 production composition root and ASGI entry point; `ASSUMPTION-1` through `ASSUMPTION-16` are closed and recorded in `docs/architecture.md`. Remaining work is limited to the deferred, non-MVP items listed above. All verification after this point must be executed inside Docker containers.
+MVP implementation is complete, including the C1 production composition root and ASGI entry point; `ASSUMPTION-1` through `ASSUMPTION-16` are closed and recorded in `docs/architecture.md`. The top-seven hardening plan above is documentation-only and verified by `AC-49` through `AC-56`; `ASSUMPTION-17` remains open and must be confirmed before adding auth, rate limiting, non-root container, or cache-encryption scope. All verification after this point must be executed inside Docker containers.

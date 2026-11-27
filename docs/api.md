@@ -48,6 +48,15 @@ HF_TOKEN=<token>
 
 `docker-compose.yml` injects that value as `HF_TOKEN` into the `api`, `tests`, and `dev` services. The file is required, so Compose fails fast when it is missing. `hf` and `huggingface_hub` read the variable automatically for authenticated, rate-limit-favored public downloads. The token is never passed as a CLI argument, baked into the image, or written to logs.
 
+### Security boundaries for the top-seven plan
+
+- Treat `127.0.0.1:8000` as the trust boundary. Any local host process may call chat and admin routes; never publish the container on host `0.0.0.0` or a LAN address.
+- Treat `.cache/responses/` as sensitive response data. Entries may contain response text and echoed user content; the prompt participates in the SHA-256 key but is not stored verbatim. Restrict filesystem access, do not put secrets in prompts, and treat `ttl_days: 30` / `max_size_mb: 1024` as retention limits rather than encryption.
+- Always validate with `docker compose --profile serve config --no-interpolate`. Plain `docker compose config` resolves and prints `HF_TOKEN`.
+- Prefer startup-configured aliases. `POST /admin/models` is a synchronous public-model download with a configured timeout and fail-closed disk preflight; async jobs and approved-alias gating are deferred.
+- Call `POST /admin/models/{alias}/unload` before `DELETE /admin/models/{alias}` if the runtime instance must be released; `DELETE` unregisters only.
+- Auth/rate limiting, non-root container, cache encryption, content-hash fingerprints, and concurrent generation are deferred product decisions under `ASSUMPTION-17`.
+
 Enabled models from `local_llm.yaml` are downloaded at startup by the app lifespan. A missing GGUF on a later request is restored on demand (see chat completions below).
 
 ## Stable error envelope
