@@ -28,6 +28,7 @@ All development, testing, deployment, and operation must happen inside Docker co
 - `docs/requirements.md` — approved requirements and acceptance criteria.
 - `docs/architecture.md` — component, sequence, state, and deployment views.
 - [docs/api.md](docs/api.md) — operator runbook: Docker workflow and HTTP endpoint reference.
+- [docs/security-report.md](docs/security-report.md) — living security posture: implemented controls, gaps, severity, effort, and review triggers.
 
 ## Commands
 
@@ -151,7 +152,7 @@ Security boundaries for this plan:
 - Use `docker compose --profile serve config --no-interpolate` when sharing configuration; plain `docker compose config` resolves and prints `HF_TOKEN`.
 - Auth/rate limiting, non-root container, cache encryption, content-hash fingerprints, and concurrent generation are deferred product decisions under `ASSUMPTION-17`.
 
-See `docs/requirements.md` for `AC-49` through `AC-60` and `docs/architecture.md` for the component/security boundary mapping.
+See `docs/requirements.md` for `AC-49` through `AC-60`, `docs/architecture.md` for the component/security boundary mapping, and `docs/security-report.md` for the living mitigation report. That report remains a draft while `ASSUMPTION-17` is open.
 
 ## OpenCode configuration
 
