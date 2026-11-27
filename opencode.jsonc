@@ -37,7 +37,8 @@
     // Local OpenAI-compatible server. OpenCode V2 uses "limit" (singular).
     // Runtime llama.cpp options are sent to the API through body.options.
     // Each local model caps output at 96 tokens in both limit.output and
-    // body.options.max_tokens because every request reloads the GGUF.
+    // body.options.max_tokens. Cold loads still run CPU inference; idle
+    // retention reduces repeated loads during a short prompt flow.
     "local-phi4": {
       "name": "Local Phi-4 Mini",
       "package": "@opencode/ai/providers/openai-compatible",

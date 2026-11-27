@@ -1,5 +1,6 @@
 import json
 import tempfile
+import threading
 import unittest
 from copy import deepcopy
 from pathlib import Path
@@ -11,7 +12,7 @@ from local_llm.cache import CacheConfig, ResponseCache
 from local_llm.composition import Services, create_app
 from local_llm.config import ModelRecord, Settings
 from local_llm.preflight import ResourceError
-from local_llm.registry import ModelRegistry
+from local_llm.registry import ModelState, ModelRegistry
 
 
 class _FakeDownloader:
@@ -48,18 +49,88 @@ class _FakePreflight:
             raise ResourceError("insufficient available memory")
 
 
+class _FakeInstance:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class _FakeRuntime:
     def __init__(self) -> None:
         self.load_calls = []
         self.chat_calls = []
         self.unload_calls = 0
-        self.loaded = False
         self.fail_chat = False
         self.content_override = None
+        self.idle_unload_seconds = 180.0
+        self.clock_value = 0.0
+        self._instance = None
+        self._loaded_alias = None
+        self._idle_event = None
+        self._idle_deadline = None
+        self._idle_callback = None
+        self.cancel_idle_unload_calls = 0
+        self.schedule_idle_unload_calls = 0
+        self.refresh_idle_unload_calls = 0
+        self.unloaded_instances = []
 
-    def load(self, model_path, options) -> None:
-        self.load_calls.append((Path(model_path), deepcopy(options)))
-        self.loaded = True
+    @property
+    def loaded_alias(self) -> str | None:
+        return self._loaded_alias
+
+    @property
+    def idle_deadline(self) -> float | None:
+        return self._idle_deadline
+
+    @property
+    def idle_callback(self):
+        return self._idle_callback
+
+    def _clock(self) -> float:
+        return self.clock_value
+
+    def is_loaded(self) -> bool:
+        return self._instance is not None
+
+    def cancel_idle_unload(self) -> None:
+        self.cancel_idle_unload_calls += 1
+        event = self._idle_event
+        self._idle_event = None
+        self._idle_deadline = None
+        self._idle_callback = None
+        if event is not None:
+            event.set()
+
+    def schedule_idle_unload(self, *, on_unload=None) -> float | None:
+        if not self.is_loaded():
+            return None
+        self.schedule_idle_unload_calls += 1
+        self._idle_event = threading.Event()
+        self._idle_callback = on_unload
+        self._idle_deadline = self._clock() + self.idle_unload_seconds
+        return self._idle_deadline
+
+    def refresh_idle_unload(self) -> float | None:
+        if not self.is_loaded():
+            return None
+        callback = self._idle_callback
+        if callback is None:
+            return None
+        self.refresh_idle_unload_calls += 1
+        self._idle_event = threading.Event()
+        self._idle_deadline = self._clock() + self.idle_unload_seconds
+        return self._idle_deadline
+
+    def load(self, model_path, options=None, *, alias=None) -> None:
+        self.cancel_idle_unload()
+        self.load_calls.append((Path(model_path), deepcopy(options), alias))
+        self._instance = _FakeInstance()
+        self._loaded_alias = alias
+        self._idle_event = None
+        self._idle_deadline = None
+        self._idle_callback = None
 
     def chat(self, request) -> dict:
         self.chat_calls.append(deepcopy(request))
@@ -86,11 +157,17 @@ class _FakeRuntime:
         }
 
     def unload(self) -> None:
+        self.cancel_idle_unload()
         self.unload_calls += 1
-        self.loaded = False
-
-    def is_loaded(self) -> bool:
-        return self.loaded
+        old = self._instance
+        self._instance = None
+        self._loaded_alias = None
+        self._idle_event = None
+        self._idle_deadline = None
+        self._idle_callback = None
+        if old is not None:
+            old.closed = True
+            self.unloaded_instances.append(old)
 
 
 class _FakeLock:
@@ -107,6 +184,11 @@ class _FakeLock:
 
     def release(self) -> None:
         self.release_calls += 1
+
+
+class _FailingCache(ResponseCache):
+    def put(self, key, *, alias, revision, response) -> bool:
+        raise RuntimeError("cache write failed")
 
 
 class ChatRoutesTests(unittest.TestCase):
@@ -186,7 +268,7 @@ class ChatRoutesTests(unittest.TestCase):
         )
         self.assertTrue(all("path" not in item for item in payload["data"]))
 
-    def test_cache_miss_returns_completion_loads_and_unloads_only_requested_alias(
+    def test_first_cache_miss_loads_and_schedules_idle_unload(
         self,
     ) -> None:
         response = self.client.post(self._url(), json=self.body)
@@ -196,10 +278,103 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertEqual(payload["choices"][0]["message"]["content"], "hello")
         self.assertEqual(len(self.runtime.load_calls), 1)
         self.assertEqual(self.runtime.load_calls[0][0].parent.name, "alias-a")
-        self.assertEqual(self.runtime.unload_calls, 1)
-        self.assertFalse(self.runtime.loaded)
+        self.assertEqual(self.runtime.load_calls[0][2], "alias-a")
+        self.assertEqual(self.runtime.unload_calls, 0)
+        self.assertTrue(self.runtime.is_loaded())
+        self.assertEqual(self.runtime.loaded_alias, "alias-a")
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 1)
+        self.assertIsNotNone(self.runtime.idle_deadline)
+        self.assertEqual(self.runtime.idle_deadline, 180.0)
         self.assertEqual(len(self.preflight.load_calls), 1)
         self.assertEqual(len(self._cache_files()), 1)
+
+    def test_three_sequential_prompts_same_alias_use_one_instance_and_refresh_idle_deadline(
+        self,
+    ) -> None:
+        prompts = [
+            {"messages": [{"role": "user", "content": "first prompt"}]},
+            {"messages": [{"role": "user", "content": "second prompt"}]},
+            {"messages": [{"role": "user", "content": "third prompt"}]},
+        ]
+
+        first = self.client.post(self._url(), json=prompts[0])
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(len(self.runtime.load_calls), 1)
+        self.assertEqual(len(self.preflight.load_calls), 1)
+        self.assertEqual(len(self.runtime.chat_calls), 1)
+        self.assertEqual(len(self._cache_files()), 1)
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 1)
+        self.assertEqual(self.runtime.refresh_idle_unload_calls, 0)
+        self.assertEqual(self.runtime.idle_deadline, 180.0)
+        self.assertEqual(self.runtime.unload_calls, 0)
+
+        self.runtime.load_calls.clear()
+        self.preflight.load_calls.clear()
+        self.runtime.clock_value = 100.0
+        second = self.client.post(self._url(), json=prompts[1])
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(len(self.runtime.load_calls), 0)
+        self.assertEqual(len(self.preflight.load_calls), 0)
+        self.assertEqual(len(self.runtime.chat_calls), 2)
+        self.assertEqual(len(self._cache_files()), 2)
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 2)
+        self.assertEqual(self.runtime.refresh_idle_unload_calls, 0)
+        self.assertEqual(self.runtime.idle_deadline, 280.0)
+
+        self.runtime.load_calls.clear()
+        self.preflight.load_calls.clear()
+        self.runtime.clock_value = 200.0
+
+        third = self.client.post(self._url(), json=prompts[2])
+        self.assertEqual(third.status_code, 200)
+        self.assertEqual(len(self.runtime.load_calls), 0)
+        self.assertEqual(len(self.preflight.load_calls), 0)
+        self.assertEqual(len(self.runtime.chat_calls), 3)
+        self.assertEqual(len(self._cache_files()), 3)
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 3)
+        self.assertEqual(self.runtime.refresh_idle_unload_calls, 0)
+        self.assertEqual(self.runtime.idle_deadline, 380.0)
+        self.assertEqual(self.runtime.unload_calls, 0)
+        self.assertTrue(self.runtime.is_loaded())
+        self.assertEqual(self.runtime.loaded_alias, "alias-a")
+
+    def test_idle_expiry_unloads_instance_and_marks_registry_unloaded(self) -> None:
+        response = self.client.post(self._url(), json=self.body)
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(self.runtime.is_loaded())
+        self.assertEqual(self.registry.get("alias-a").state, ModelState.LOADED)
+
+        callback = self.runtime.idle_callback
+        self.assertIsNotNone(callback)
+        self.runtime.unload()
+        callback()
+
+        self.assertFalse(self.runtime.is_loaded())
+        self.assertEqual(len(self.runtime.unloaded_instances), 1)
+        self.assertTrue(self.runtime.unloaded_instances[0].closed)
+        self.assertEqual(self.registry.get("alias-a").state, ModelState.UNLOADED)
+
+    def test_switching_alias_unloads_previous_alias_immediately(self) -> None:
+        first = self.client.post(self._url(), json=self.body)
+        self.assertEqual(first.status_code, 200)
+
+        self.runtime.load_calls.clear()
+        self.preflight.load_calls.clear()
+        self.runtime.unload_calls = 0
+
+        second = self.client.post(self._url("alias-b"), json=self.body)
+        self.assertEqual(second.status_code, 200)
+
+        self.assertEqual(self.runtime.unload_calls, 1)
+        self.assertTrue(self.runtime.is_loaded())
+        self.assertEqual(self.runtime.loaded_alias, "alias-b")
+        self.assertEqual(len(self.runtime.load_calls), 1)
+        self.assertEqual(self.runtime.load_calls[0][2], "alias-b")
+        self.assertEqual(len(self.preflight.load_calls), 1)
+        self.assertEqual(self.registry.get("alias-a").state, ModelState.UNLOADED)
+        self.assertEqual(self.registry.get("alias-b").state, ModelState.LOADED)
+        self.assertEqual(len(self.runtime.unloaded_instances), 1)
+        self.assertTrue(self.runtime.unloaded_instances[0].closed)
 
     def test_captures_model_output_for_name_prompt(self) -> None:
         prompt = "what is your name, respond using minimal tokens?"
@@ -220,6 +395,7 @@ class ChatRoutesTests(unittest.TestCase):
 
     def test_repeated_request_returns_cache_without_runtime(self) -> None:
         first = self.client.post(self._url(), json=self.body)
+        self.assertEqual(first.status_code, 200)
 
         self.preflight.load_calls.clear()
         self.preflight.download_calls.clear()
@@ -227,6 +403,8 @@ class ChatRoutesTests(unittest.TestCase):
         self.runtime.load_calls.clear()
         self.runtime.chat_calls.clear()
         self.runtime.unload_calls = 0
+        self.runtime.refresh_idle_unload_calls = 0
+        self.runtime.schedule_idle_unload_calls = 0
 
         second = self.client.post(self._url(), json=self.body)
 
@@ -237,11 +415,15 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertEqual(self.runtime.load_calls, [])
         self.assertEqual(self.runtime.chat_calls, [])
         self.assertEqual(self.runtime.unload_calls, 0)
+        self.assertEqual(self.runtime.refresh_idle_unload_calls, 1)
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 0)
+        self.assertTrue(self.runtime.is_loaded())
 
     def test_different_sampling_parameter_creates_different_cache_key(self) -> None:
         self.client.post(self._url(), json=self.body)
         self.runtime.load_calls.clear()
         self.runtime.chat_calls.clear()
+        self.preflight.load_calls.clear()
 
         response = self.client.post(
             self._url(), json={**self.body, "temperature": 0.9}
@@ -250,7 +432,7 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertEqual(
             response.json()["choices"][0]["message"]["content"], "temp=0.9"
         )
-        self.assertEqual(len(self.runtime.load_calls), 1)
+        self.assertEqual(len(self.runtime.load_calls), 0)
         self.assertEqual(self.runtime.chat_calls[0]["temperature"], 0.9)
         self.assertEqual(len(self._cache_files()), 2)
 
@@ -271,7 +453,7 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertEqual(len(self.downloader.calls), 1)
         self.assertEqual(len(self.preflight.download_calls), 1)
 
-    def test_streaming_cache_miss_emits_sse_and_unloads(self) -> None:
+    def test_streaming_cache_miss_emits_sse_and_schedules_idle_unload(self) -> None:
         response = self.client.post(
             self._url(), json={**self.body, "stream": True}
         )
@@ -281,14 +463,18 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertIn("chat.completion.chunk", response.text)
         self.assertIn('"content":"hello"', response.text)
         self.assertTrue(response.text.endswith("data: [DONE]\n\n"))
-        self.assertEqual(self.runtime.unload_calls, 1)
-        self.assertFalse(self.runtime.loaded)
+        self.assertEqual(self.runtime.unload_calls, 0)
+        self.assertTrue(self.runtime.is_loaded())
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 1)
+        self.assertIsNotNone(self.runtime.idle_deadline)
 
     def test_non_stream_cache_hit_streams_without_loading(self) -> None:
         self.client.post(self._url(), json=self.body)
         self.runtime.load_calls.clear()
         self.runtime.chat_calls.clear()
         self.runtime.unload_calls = 0
+        self.runtime.refresh_idle_unload_calls = 0
+        self.runtime.schedule_idle_unload_calls = 0
 
         response = self.client.post(
             self._url(), json={**self.body, "stream": True}
@@ -298,6 +484,9 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertEqual(self.runtime.load_calls, [])
         self.assertEqual(self.runtime.chat_calls, [])
         self.assertEqual(self.runtime.unload_calls, 0)
+        self.assertEqual(self.runtime.refresh_idle_unload_calls, 1)
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 0)
+        self.assertTrue(self.runtime.is_loaded())
 
     def test_corrupt_cache_entry_is_treated_as_miss(self) -> None:
         self.client.post(self._url(), json=self.body)
@@ -309,8 +498,10 @@ class ChatRoutesTests(unittest.TestCase):
         response = self.client.post(self._url(), json=self.body)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(self.runtime.load_calls), 1)
+        self.assertEqual(len(self.runtime.load_calls), 0)
         self.assertEqual(len(self.runtime.chat_calls), 1)
+        self.assertEqual(self.runtime.unload_calls, 0)
+        self.assertTrue(self.runtime.is_loaded())
 
     def test_preflight_failure_returns_503_without_loading(self) -> None:
         self.preflight.fail_load = True
@@ -367,7 +558,21 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertEqual(response.json()["error"]["code"], "runtime_error")
         self.assertNotIn("/private/path", json.dumps(response.json()))
         self.assertEqual(self.runtime.unload_calls, 1)
-        self.assertFalse(self.runtime.loaded)
+        self.assertFalse(self.runtime.is_loaded())
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 0)
+        self.assertEqual(self.registry.get("alias-a").state, ModelState.UNLOADED)
+
+    def test_cache_put_failure_unloads_and_does_not_schedule_idle_unload(self) -> None:
+        self.services.cache = _FailingCache(CacheConfig(dir=".cache/responses"), root=self.root)
+
+        response = self.client.post(self._url(), json=self.body)
+
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["error"]["code"], "runtime_error")
+        self.assertEqual(self.runtime.unload_calls, 1)
+        self.assertFalse(self.runtime.is_loaded())
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 0)
+        self.assertEqual(self.registry.get("alias-a").state, ModelState.UNLOADED)
 
 
 if __name__ == "__main__":

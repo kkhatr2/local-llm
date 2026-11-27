@@ -5,6 +5,10 @@ server:
   port: 8000
   # Cold CPU inference can hold the process-wide lock longer than 30 seconds.
   lock_timeout_seconds: 600
+  # Keep a loaded GGUF resident for this many idle seconds after the last prompt.
+  # Valid values are > 0 and <= 86400 (24 hours); default 180 seconds.
+  # A prompt for the loaded alias resets the timer; explicit admin unload wins.
+  idle_unload_seconds: 180
 
 paths:
   model_dir: models

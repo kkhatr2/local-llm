@@ -181,6 +181,7 @@ def build_app(
     root_path = Path(root or Path.cwd()).resolve()
     settings = ConfigLoader().load(config_path)
     enabled_records = [record for record in settings.models if record.enabled]
+    lifecycle_lock = lock or threading.Lock()
 
     services = Services(
         settings=settings,
@@ -198,8 +199,10 @@ def build_app(
             llama_factory or _llama_factory,
             llama_defaults=settings.llama_defaults,
             generation_defaults=settings.generation_defaults,
+            idle_unload_seconds=settings.server.idle_unload_seconds,
+            lock=lifecycle_lock,
         ),
-        lock=lock or threading.Lock(),
+        lock=lifecycle_lock,
     )
 
     app = create_app(

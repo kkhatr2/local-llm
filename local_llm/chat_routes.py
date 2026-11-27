@@ -14,7 +14,7 @@ from local_llm.cache import (
     weight_fingerprint,
 )
 from local_llm.locking import locked
-from local_llm.registry import ModelState
+from local_llm.registry import ModelState, UnknownAliasError
 from local_llm.runtime import (
     SAMPLING_OPTION_KEYS,
     merge_load_options,
@@ -54,6 +54,24 @@ def _resolve_path(services: Any, alias: str) -> Any:
         path = services.downloader.download(entry.record, services.root)
         services.registry.mark_downloaded(alias, path)
         return path
+
+
+def _mark_unloaded(services: Any, alias: str) -> None:
+    try:
+        services.registry.set_state(alias, ModelState.UNLOADED)
+    except UnknownAliasError:
+        pass
+
+
+def _cache_response(services: Any, request: Any, cached: Any) -> Any:
+    """Return a cached response and treat the prompt as model activity."""
+
+    services.runtime.refresh_idle_unload()
+    if request.stream:
+        return StreamingResponse(
+            services.cache.replay_sse(cached), media_type="text/event-stream"
+        )
+    return JSONResponse(cached)
 
 
 def create_chat_router(services: Any) -> APIRouter:
@@ -126,25 +144,29 @@ def create_chat_router(services: Any) -> APIRouter:
 
         cached = services.cache.get(key)
         if cached is not None:
-            if request.stream:
-                return StreamingResponse(
-                    services.cache.replay_sse(cached), media_type="text/event-stream"
-                )
-            return JSONResponse(cached)
+            return _cache_response(services, request, cached)
 
         with locked(services.lock, services.settings.server.lock_timeout_seconds):
             cached = services.cache.get(key)
             if cached is not None:
-                if request.stream:
-                    return StreamingResponse(
-                        services.cache.replay_sse(cached),
-                        media_type="text/event-stream",
-                    )
-                return JSONResponse(cached)
+                return _cache_response(services, request, cached)
 
-            services.preflight.check_load(path)
-            services.runtime.load(path, {**entry.record.options, **options})
-            services.registry.set_state(alias, ModelState.LOADED)
+            services.runtime.cancel_idle_unload()
+            loaded_alias = getattr(services.runtime, "loaded_alias", None)
+            if services.runtime.is_loaded() and loaded_alias != alias:
+                if loaded_alias is not None:
+                    _mark_unloaded(services, loaded_alias)
+                services.runtime.unload()
+            reuse_loaded_model = (
+                services.runtime.is_loaded() and loaded_alias == alias
+            )
+            if not reuse_loaded_model:
+                services.preflight.check_load(path)
+                services.runtime.load(
+                    path, {**entry.record.options, **options}, alias=alias
+                )
+                services.registry.set_state(alias, ModelState.LOADED)
+
             try:
                 generation_request = dict(body)
                 generation_request["stream"] = False
@@ -155,9 +177,14 @@ def create_chat_router(services: Any) -> APIRouter:
                     revision=entry.record.revision,
                     response=response,
                 )
-            finally:
+            except BaseException:
                 services.runtime.unload()
-                services.registry.set_state(alias, ModelState.UNLOADED)
+                _mark_unloaded(services, alias)
+                raise
+
+            services.runtime.schedule_idle_unload(
+                on_unload=lambda: _mark_unloaded(services, alias)
+            )
 
             if request.stream:
                 return StreamingResponse(

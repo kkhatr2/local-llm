@@ -171,11 +171,13 @@ models:
         self.assertFalse((self.root / "models/alias-a/model-a.gguf").exists())
 
     def test_chat_uses_injected_runtime_with_merged_options(self) -> None:
-        with TestClient(self._build()) as client:
+        app = self._build()
+        with TestClient(app) as client:
             response = client.post(
                 "/v1/models/alias-a/chat/completions",
                 json={"messages": [{"role": "user", "content": "hello"}]},
             )
+            services = app.state.services
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
@@ -194,6 +196,17 @@ models:
         self.assertEqual(sampling["top_k"], 20)
         self.assertEqual(sampling["min_p"], 0.08)
         self.assertEqual(sampling["repeat_penalty"], 1.1)
+        self.assertFalse(instance.closed)
+        runtime = services.runtime
+        self.assertTrue(runtime.is_loaded())
+        self.assertEqual(runtime.loaded_alias, "alias-a")
+        self.assertIsNotNone(runtime.idle_deadline)
+        self.assertIsInstance(runtime.idle_deadline, float)
+        self.assertGreater(runtime.idle_deadline, 0.0)
+        self.assertEqual(services.registry.get("alias-a").state, ModelState.LOADED)
+
+        services.runtime.unload()
+        self.assertFalse(runtime.is_loaded())
         self.assertTrue(instance.closed)
 
     def test_production_app_exposes_admin_add(self) -> None:

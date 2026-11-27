@@ -141,7 +141,7 @@ Cache files are ignored by Git.
 
 ## Security and top-seven plan
 
-The 2026-11-27 plan for the seven most desirable features keeps behavior unchanged: full-request cache with no bypass, loopback-only exposure without auth, fail-closed preflight, lazy load/unload, Docker-only execution, `private.txt` → `HF_TOKEN` injection, and no 7B cap. The baseline commit `3d7e43a` was pushed to `origin/main` before the plan was written.
+The 2026-11-27 plan for the seven most desirable features preserves the full-request cache with no bypass, loopback-only exposure without auth, fail-closed preflight, Docker-only execution, `private.txt` → `HF_TOKEN` injection, and no 7B cap. Item 4 was then changed by user decision: the GGUF is still loaded lazily, but it stays resident for an idle window after the last prompt instead of unloading immediately. The baseline commit `3d7e43a` was pushed to `origin/main` before the plan was written.
 
 Security boundaries for this plan:
 
@@ -151,7 +151,7 @@ Security boundaries for this plan:
 - Use `docker compose --profile serve config --no-interpolate` when sharing configuration; plain `docker compose config` resolves and prints `HF_TOKEN`.
 - Auth/rate limiting, non-root container, cache encryption, content-hash fingerprints, and concurrent generation are deferred product decisions under `ASSUMPTION-17`.
 
-See `docs/requirements.md` for `AC-49` through `AC-56` and `docs/architecture.md` for the component/security boundary mapping.
+See `docs/requirements.md` for `AC-49` through `AC-60` and `docs/architecture.md` for the component/security boundary mapping.
 
 ## OpenCode configuration
 
@@ -159,9 +159,11 @@ Each local model is exposed through its own custom provider because each alias h
 
 OpenCode V2 uses `limit` singular. Runtime llama.cpp options are sent through `body.options`; there is no supported top-level `options` field.
 
-Each local provider caps output at 96 tokens in both `limit.output` and `body.options.max_tokens`. The API reloads the GGUF for every request, so a short cap avoids long cold CPU generations.
+Each local provider caps output at 96 tokens in both `limit.output` and `body.options.max_tokens`. A cold cache miss can require a GGUF load, so the cap still avoids long CPU generations; idle retention now prevents repeated loads during a short prompt flow.
 
 The process-wide model lifecycle lock waits `server.lock_timeout_seconds` from `local_llm.yaml` (default `600` seconds). Contention still returns `503 resource_unavailable`; the longer wait accommodates cold CPU inference.
+
+A successful response keeps the requested GGUF resident for `server.idle_unload_seconds` (default `180` seconds; valid `> 0` and `<= 86400` seconds / 24 hours). A follow-up prompt for the loaded alias or a cache hit resets that timer; a prompt for a different alias unloads the resident model immediately; explicit admin unload cancels the timer; and runtime or cache-write errors unload immediately. Load preflight is skipped when the same alias is still resident, and only one model instance exists at a time. The timer uses the same process lock as chat and admin lifecycle operations.
 
 Example selector:
 
@@ -182,6 +184,7 @@ After editing OpenCode configuration, use `/reload` if the change is not picked 
 
 ## Verification evidence
 
-- `docker compose run --rm tests` passes all 95 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests inside the Miniconda container.
+- The final `docker compose run --rm tests` run passed all 110 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests inside the Miniconda container (`Ran 110 tests ... OK`), including the new idle-retention cases. Idle retention (`DECISION-21`, `AC-57`–`AC-60`) is verified.
 - `docker compose --profile serve config --no-interpolate` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, the host publish is loopback-only (`127.0.0.1:8000`), `env_file` is present for `api`, `tests`, and `dev`, and the config mount is read-only. Use `--no-interpolate` when sharing config output because plain `docker compose config` resolves and prints `HF_TOKEN`. `git check-ignore -v private.txt models/ .cache/responses/` confirms all three paths are ignored.
+- OpenCode end-to-end smoke (`AC-61`): **passed** with a fresh standalone session (`ses_local-llm-idle-e2e-20261127-1600`) using `local-qwen-coder-05b/chat`. `hi` returned `Hello! How can I assist you today?`; follow-up `what is your name?` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.`; follow-up `repeat your answer in one short sentence.` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.` All three calls were served by the Docker API over loopback.
 - Real-model smoke test: **passed inside Docker with token-authenticated downloads**. The API container reported `HF_TOKEN configured: True`, and `hf` downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` without the unauthenticated-request warning. From the host loopback, `GET /health` and `GET /v1/models` returned `200`; `POST /v1/models/qwen25-coder-05b/chat/completions` with `what is your name, respond using minimal tokens?` returned `200` with content `I am Qwen.` (usage 39/5/44). A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Downloaded weights and cache entries were removed afterward. Contract tests still use a fake Hugging Face CLI and fake Llama runtime; cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.

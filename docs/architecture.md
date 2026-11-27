@@ -1,6 +1,6 @@
 # Architecture
 
-Status: **implemented system architecture; external boundaries unverified against real services**. This document describes the component boundaries for the local LLM API. All application components are implemented, including the production ASGI entry point. The external boundaries (C13 Hugging Face CLI and C14 llama.cpp CPU inference) have not been exercised with real public model weights during MVP verification.
+Status: **implemented and verified system architecture**. This document describes the component boundaries for the local LLM API. All application components are implemented, including the production ASGI entry point. The external boundaries (C13 Hugging Face CLI and C14 llama.cpp CPU inference) were exercised with real public model weights during MVP verification and again in the three-prompt OpenCode end-to-end smoke.
 
 Authoritative scope: `docs/requirements.md`. Runtime settings: `local_llm.yaml`. Operating rules: `AGENTS.md`.
 
@@ -18,8 +18,8 @@ There are **14 modeled components**:
 | C3 | ModelRegistry | Application | Implemented | Tracks aliases, repo IDs, filenames, revisions, options, and registered/downloaded state. |
 | C4 | HfCliDownloader | Application | Implemented | Invokes the configured Hugging Face CLI (`hf` by default), writes into `models/<alias>/`, and verifies the GGUF file. |
 | C5 | ResourcePreflight | Application | Implemented | Checks disk and memory estimates and fails closed before download or load. |
-| C6 | LlamaRuntimeAdapter | Application | Implemented | Loads a GGUF with merged llama options, generates completions, and unloads after response. |
-| C7 | ChatRoutes | Application | Implemented | Exposes `/health`, `/v1/models`, and `/v1/models/{alias}/chat/completions`. |
+| C6 | LlamaRuntimeAdapter | Application | Implemented | Loads a GGUF with merged llama options, generates completions, and holds at most one resident instance until the idle-unload timer expires or an immediate-unload condition (alias switch, explicit admin unload, error) fires. |
+| C7 | ChatRoutes | Application | Implemented | Exposes `/health`, `/v1/models`, and `/v1/models/{alias}/chat/completions`; resets the idle timer on a prompt or cache hit for the resident alias, and unloads it before loading a different alias. |
 | C8 | AdminRoutes | Application | Implemented | Exposes runtime add, unload, and remove operations. |
 | C9 | ResponseCache | Application | Implemented | Stores completed responses, keys full normalized requests, evicts by TTL/size, and replays SSE. |
 | C10 | ErrorMapper | Application | Implemented | Converts config, download, preflight, runtime, and validation failures into stable HTTP errors. |
@@ -110,6 +110,7 @@ classDiagram
         +download
         +resources
         +models
+        %% server.idle_unload_seconds: 180 (valid > 0, <= 86400 / 24 h); server.lock_timeout_seconds: 600
     }
 
     class RegistryEntry {
@@ -150,12 +151,16 @@ classDiagram
         +load(model_path, options) void
         +chat(request) Response
         +unload() void
+        +resident_alias: str | None
+        +idle_unload_seconds: int
+        %% at most one resident instance; idle timer shares the process-wide lock
     }
 
     class ChatRoutes {
         +health() HealthResponse
         +models() ModelList
         +chat(alias, request) Response
+        %% reset idle timer on prompt/cache hit for resident alias; unload resident before loading a different alias
     }
 
     class AdminRoutes {
@@ -203,9 +208,9 @@ classDiagram
 | C3 ModelRegistry | Configured or runtime-added model records | Stores alias-to-model mappings and lifecycle state. | Model records for routes and runtime. | Duplicate or unknown aliases are rejected. |
 | C4 HfCliDownloader | Model record and destination | Runs the configured Hugging Face CLI (`hf` by default) inside the container and verifies the file. | Local GGUF path. | Returns sanitized download error; writes no partial model path on rejected requests. |
 | C5 ResourcePreflight | Disk/RAM thresholds and model path | Estimates required disk before download and memory before load. | Approval to proceed. | Fails closed with `503` and does not download or load. |
-| C6 LlamaRuntimeAdapter | GGUF path, merged llama and sampling options, chat request | Calls `Llama(...)`, generates a response using merged `temperature`, `top_p`, `top_k`, `min_p`, and `repeat_penalty`, then unloads after completion. | OpenAI-compatible response or SSE stream. | Runtime failures are mapped to sanitized `502`/`504`. |
-| C7 ChatRoutes | OpenAI-compatible request body | Checks cache first; on miss, coordinates preflight, registry, runtime, cache write, and unload. | JSON or SSE response. | Invalid bodies return `422` through C10. |
-| C8 AdminRoutes | Add/unload/remove requests | Registers new models, unloads current instances, and removes aliases. | Updated registry state. | Invalid aliases or failed downloads return stable errors. |
+| C6 LlamaRuntimeAdapter | GGUF path, merged llama and sampling options, chat request | Calls `Llama(...)`, generates a response using merged `temperature`, `top_p`, `top_k`, `min_p`, and `repeat_penalty`, then keeps at most one resident instance until the idle-unload timer (`server.idle_unload_seconds`, default 180 s, valid `> 0` and `<= 86400` s / 24 h) expires or an immediate-unload condition fires. | OpenAI-compatible response or SSE stream. | Runtime or cache-put errors unload immediately and cancel the timer; runtime failures map to sanitized `502`/`504`. |
+| C7 ChatRoutes | OpenAI-compatible request body | Checks cache first; on miss, coordinates preflight, registry, runtime, cache write, and idle-unload scheduling; refreshes the timer on a prompt or cache hit for the resident alias and unloads before loading a different alias. | JSON or SSE response. | Invalid bodies return `422` through C10. |
+| C8 AdminRoutes | Add/unload/remove requests | Registers new models, unloads current instances (cancelling the idle timer), and removes aliases. | Updated registry state. | Invalid aliases or failed downloads return stable errors. |
 | C9 ResponseCache | Cache key and completed response | Hashes canonical request data, writes atomically, expires and evicts entries, replays SSE. | Cached response or cache miss. | Corrupt or expired entries are deleted and treated as misses. |
 | C10 ErrorMapper | Domain and runtime exceptions | Converts exceptions to stable HTTP status codes and sanitized envelopes. | HTTP error response. | Preserves safe cause metadata without leaking paths or stack traces. |
 | C11 DockerRuntime | Dockerfile, Compose file, volumes, `private.txt` | Builds Miniconda image, injects `HF_TOKEN` into `api`/`tests`/`dev`, mounts `models/` and `.cache/`, and publishes only host loopback. | Containerized test/dev/API environments. | Invalid Compose config or missing `private.txt` fails before deployment. |
@@ -227,10 +232,10 @@ sequenceDiagram
     CACHE-->>CHAT: cached response
     CHAT->>CACHE: replay_sse(response) if stream:true
     CACHE-->>OC: SSE frames + [DONE]
-    Note over CHAT,CACHE: Cache hits skip load preflight, model loading, and inference after GGUF path/fingerprint resolution; if GGUF is absent, download restoration and its fail-closed preflight still occur before key computation
+    Note over CHAT,CACHE: Cache hits skip load preflight, model loading, and inference after GGUF path/fingerprint resolution; if GGUF is absent, download restoration and its fail-closed preflight still occur before key computation. A cache hit also refreshes the idle-unload timer when a model instance is resident.
 ```
 
-## UML sequence: cache miss with model load and unload
+## UML sequence: cache miss with model load and idle unload
 
 ```mermaid
 sequenceDiagram
@@ -245,32 +250,43 @@ sequenceDiagram
     OC->>CHAT: POST /v1/models/{alias}/chat/completions
     CHAT->>CACHE: get(key)
     CACHE-->>CHAT: null
-    CHAT->>PRE: checkLoad(model_path)
-    PRE-->>CHAT: ok
-    CHAT->>REG: get(alias)
-    REG-->>CHAT: model record
-    CHAT->>RT: load(path, merged options)
-    RT->>LLAMA: Llama(n_ctx, n_batch, flash_attn, ...)
+    alt requested alias already resident
+        CHAT->>RT: reuse instance (skip load preflight)
+    else different alias resident or none resident
+        CHAT->>RT: unload() resident immediately if a different alias is loaded
+        CHAT->>PRE: checkLoad(model_path)
+        PRE-->>CHAT: ok
+        CHAT->>REG: get(alias)
+        REG-->>CHAT: model record
+        CHAT->>RT: load(path, merged options)
+        RT->>LLAMA: Llama(n_ctx, n_batch, flash_attn, ...)
+    end
     CHAT->>RT: chat(request)
     RT-->>CHAT: completed response
     CHAT->>CACHE: put(key, alias, revision, response)
-    CHAT->>RT: unload()
+    CHAT->>RT: start/reset idle timer for resident alias (no unload)
     CHAT-->>OC: JSON or SSE response
+    Note over CHAT,RT: The idle timer uses the process-wide lock (server.lock_timeout_seconds: 600). After server.idle_unload_seconds (default 180 s; valid > 0 and <= 86400 s / 24 h) with no prompt for the loaded alias, the instance is unloaded; a prompt for a different alias unloads it immediately before loading the new alias; explicit admin unload or a runtime/cache-put error unloads immediately and cancels the timer. Only one instance exists at a time; OpenCode's 96-token cap is unchanged.
 ```
 
 ## UML state: model lifecycle
 
 ```mermaid
 stateDiagram-v2
+    %% server.idle_unload_seconds: default 180 s; valid > 0 and <= 86400 s (24 h)
     [*] --> Registered
     Registered --> Downloaded: startup or admin add
     Downloaded --> Unloaded: ready
-    Unloaded --> Loading: first endpoint call
+    Unloaded --> Loading: first endpoint call (load preflight)
     Loading --> Loaded: Llama created
     Loaded --> Generating: chat request
-    Generating --> Unloaded: response complete or [DONE]
-    Generating --> Failed: runtime error
-    Failed --> Unloaded: cleanup
+    Generating --> Loaded: response complete or [DONE]; start/reset idle timer
+    Loaded --> Loaded: prompt or cache hit for resident alias resets idle timer
+    Loaded --> Unloaded: idle timer expires (server.idle_unload_seconds)
+    Loaded --> Unloaded: different-alias prompt (unload before loading new alias)
+    Loaded --> Unloaded: explicit admin unload (cancel timer)
+    Generating --> Failed: runtime or cache-put error
+    Failed --> Unloaded: immediate unload; cancel timer
     Registered --> Removed: admin remove
     Downloaded --> Removed: admin remove
     Unloaded --> Removed: admin remove
@@ -309,6 +325,9 @@ flowchart TB
 - HTTP routes depend on application contracts, not on `llama_cpp` or filesystem details.
 - I/O, clocks, randomness, subprocess calls, and retries stay at explicit edges.
 - Cache hits skip load preflight, model loading, and inference after GGUF path/fingerprint resolution; if the GGUF file is absent, download restoration and its fail-closed preflight still occur before key computation.
+- At most one model instance is resident at a time. A prompt for a different alias unloads the current instance immediately before loading the new one; load preflight is skipped when reusing the already loaded alias and still runs on a cold load and on download restoration.
+- The idle-unload timer uses the same process-wide lock as generation (`server.lock_timeout_seconds: 600`; contention remains `503`). A prompt for the loaded alias or a cache hit resets the timer; explicit admin unload and runtime/cache-put errors unload immediately and cancel it. `server.idle_unload_seconds` defaults to `180` and is validated `> 0` and `<= 86400` (24 hours).
+- OpenCode's 96-token cap (`limit.output` and `body.options.max_tokens`) is unchanged by idle retention.
 - `ModelRegistry.list()` is the external model-list contract and returns `ModelRecord`s only; `get()` is internal and may return `RegistryEntry.path` for runtime loading. External routes must not serialize that path.
 - Cache keys include request `options`; changing `n_ctx`, `n_batch`, `flash_attn`, `temperature`, `top_p`, `top_k`, `min_p`, or `repeat_penalty` produces a different key.
 - `make_cache_key` receives a validated alias from the registry and a fingerprint from `weight_fingerprint`; both are non-empty by contract and are not re-checked inside the cache.
@@ -328,17 +347,18 @@ The baseline for this plan was pushed to `origin/main` as `3d7e43a` before any p
 | Local disk exhaustion from synchronous admin downloads | C8 `POST /admin/models`, C4 downloader, C5 disk preflight | Prefer startup-configured models; keep configured download timeout and disk fail-closed preflight | Async queue and admin gating are deferred |
 | Token exposure through Compose output or logs | C11 injects `HF_TOKEN` from `private.txt`; C4 uses `hf` without token CLI arguments | Keep `env_file`, gitignore/dockerignore, and mandate `--no-interpolate` when sharing config | Plain `docker compose config` still prints the resolved token; operational discipline remains required |
 | Root container process | C11 Dockerfile/Compose boundary | No runtime behavior change in this pass; keep read-only config mounts and no host runtime dependencies | Non-root `USER` is deferred pending Windows bind-mount ownership verification under `ASSUMPTION-17` |
-| Lock contention / head-of-line blocking | C6/C7 process-wide lock; `server.lock_timeout_seconds: 600`; `503` on contention | Document the wait and stable error; keep OpenCode 96-token cap | Concurrent generation and multi-model residency are deferred |
+| Lock contention / head-of-line blocking and idle model retention | C6/C7 process-wide lock; `server.lock_timeout_seconds: 600`; `503` on contention; at most one resident GGUF, kept for `server.idle_unload_seconds` (default 180 s, validated `> 0` and `<= 86400` s / 24 h) after the last prompt | Document the wait and stable error; the idle timer uses the same lock; a resident GGUF stays in container memory after the response but is not a response cache; admin unload cancels the timer; keep OpenCode 96-token cap | A resident model holds RAM between prompts; concurrent generation and concurrent multi-model residency are deferred |
 
 ## Verified and unverified
 
 - Verified: `docker compose config` and `docker compose --profile serve config --no-interpolate` parse successfully with the provided Docker Compose binary. The no-interpolate form confirms the API command `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, loopback-only host publishing (`host_ip: 127.0.0.1`, `published: "8000"`, `target: 8000`), `env_file` wiring for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`.
 - Verified: the production ASGI entry point `local_llm.api:app` is exposed as `app = build_app()` in `local_llm/api.py`; `local_llm/composition.py` uses FastAPI lifespan startup wiring and no deprecated `on_event` hook.
-- Verified: the Miniconda test image builds and `docker compose run --rm tests` passes all 95 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests, including capture of the model output for `what is your name, respond using minimal tokens?`.
+- Verified: the Miniconda test image builds and the final `docker compose run --rm tests` passes all 110 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests, including idle retention and capture of the model output for `what is your name, respond using minimal tokens?`.
 - Verified: `docker compose --profile serve up -d api` started the API container with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container and logs showed per-model download-skip status.
 - Verified: `git check-ignore -v private.txt models/ .cache/responses/` reports `.gitignore:5:private.txt`, `.gitignore:2:models/`, and `.gitignore:3:.cache/`; `.dockerignore` also excludes `private.txt` from the image build context.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
 - Verified: a token-authenticated real-model smoke test passed inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`). The API container reported `HF_TOKEN configured: True` and `hf download` restored the GGUF without the unauthenticated warning. From host loopback, `/health`, `/v1/models`, and the chat endpoint returned `200`; the prompt `what is your name, respond using minimal tokens?` produced `I am Qwen.`. A repeat replayed the cached response, admin unload returned `200`, admin delete returned `204`, and weights/cache entries were removed afterward.
+- Verified for this change: `DECISION-21` idle retention (`server.idle_unload_seconds` default 180 s, validated `> 0` and `<= 86400` s / 24 h) and its observable criteria `AC-57`–`AC-61` — timer reset on a prompt or cache hit, immediate unload on alias switch / explicit admin unload / runtime or cache-put error, preflight skipped when reusing the loaded alias, and a single resident instance. The idle timer shares the process-wide lock (`server.lock_timeout_seconds: 600`); the OpenCode 96-token cap is unchanged. The final Docker run passed 110 tests, and the three-prompt OpenCode end-to-end smoke confirmed inputs and outputs from the local provider.
 - Contract tests use a fake Hugging Face CLI and a fake Llama runtime. SSE replay reconstructs frames from stored complete responses by design; it is not true incremental streaming generation.
 - No application components are pending for MVP. C13 and C14 are external boundaries; `ASSUMPTION-16` (committed dependency lock file) remains deferred and non-MVP.
 
@@ -354,8 +374,8 @@ The tech lead closed `ASSUMPTION-1` through `ASSUMPTION-16`. Closing a decision 
 | `ASSUMPTION-4` | Disk free `>= min_free_disk_gb + reserve_disk_gb`. RAM estimate is GGUF file size; available RAM from `/proc/meminfo` `MemAvailable` with `os.sysconf` fallback; read failure fails closed. | C5 |
 | `ASSUMPTION-5` | No auth in MVP; loopback-only host publish is the control. | C11 boundary; C7/C8 |
 | `ASSUMPTION-6` | `{command} download {repo_id} {filename} --revision {revision} --local-dir models/<alias>`, with `command: hf` by default. Public check before download; runner and repo-info injected; skip non-empty existing file. | C4 |
-| `ASSUMPTION-7` | One process-wide lock, configurable `server.lock_timeout_seconds` (default 600 s), `503` on contention. | C7 / C6 |
-| `ASSUMPTION-8` | Streaming unload in `try/finally`; cache `put` after full response assembly; no cache on error. | C6 / C7 / C9 |
+| `ASSUMPTION-7` | One process-wide lock, configurable `server.lock_timeout_seconds` (default 600 s), `503` on contention; the idle-unload timer uses this same lock. | C7 / C6 |
+| `ASSUMPTION-8` | Cache `put` after full response assembly; no cache on error. With `DECISION-21`, a successful non-streaming or streaming response starts/resets the idle-unload timer instead of unloading at completion/`[DONE]`; a runtime or cache-put error unloads immediately and cancels the timer. | C6 / C7 / C9 |
 | `ASSUMPTION-9` | Runtime aliases are ephemeral; server never rewrites `local_llm.yaml`. | C8 |
 | `ASSUMPTION-10` | One OpenCode provider per alias. | C12 |
 | `ASSUMPTION-11` | Cache key is SHA-256 of `canonical_json`; fingerprint `size:mtime_ns`; exclude `stream`, `stream_options`, `request_id`, `verbose`. | C9 |

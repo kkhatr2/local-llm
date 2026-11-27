@@ -4,7 +4,7 @@ Status: **approved for MVP definition**. CompositionRoot (C1), ConfigLoader (C2)
 
 Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. All application modules and their tests pass inside the Docker test service, including the production ASGI entry point `local_llm.api:app` (`app = build_app()` in `local_llm/api.py`, built by `local_llm/composition.py` with FastAPI lifespan startup wiring). All future development, testing, deployment, and other execution must occur inside Docker containers only.
 
-Verification evidence: `docker compose run --rm tests` completed with `Ran 95 tests ... OK` (including composition, OpenCode-config, and container-environment tests, and a prompt-output capture test); `docker compose --profile serve config --no-interpolate` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), `env_file` wiring for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`; `git check-ignore -v private.txt models/ .cache/responses/` reports all three paths as ignored. The real-model smoke test (criterion 28) **passed inside Docker with token-authenticated downloads** using `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`, file `qwen2.5-coder-0.5b-instruct-q4_k_m.gguf`): the API container reported `HF_TOKEN configured: True`, `hf download` succeeded without the unauthenticated warning, `/health` and `/v1/models` returned `200` from host loopback, and the chat endpoint returned `200` with content `I am Qwen.` for `what is your name, respond using minimal tokens?`. A repeat replayed the cached response; admin unload returned `200` and admin delete returned `204`. The downloaded weights and cache entries were removed after verification. API logs report per-model download status (`downloading model`, `model download complete`, or `model already present; skipping download`); this was verified in the API container. Contract tests still use a fake Hugging Face CLI and a fake Llama runtime. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
+Verification evidence: the baseline `docker compose run --rm tests` completed with `Ran 95 tests ... OK` (including composition, OpenCode-config, and container-environment tests, and a prompt-output capture test), and the final run for `DECISION-21` completed with `Ran 110 tests ... OK`; `docker compose --profile serve config --no-interpolate` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), `env_file` wiring for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`; `git check-ignore -v private.txt models/ .cache/responses/` reports all three paths as ignored. The real-model smoke test (criterion 28) **passed inside Docker with token-authenticated downloads** using `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`, file `qwen2.5-coder-0.5b-instruct-q4_k_m.gguf`): the API container reported `HF_TOKEN configured: True`, `hf download` succeeded without the unauthenticated warning, `/health` and `/v1/models` returned `200` from host loopback, and the chat endpoint returned `200` with content `I am Qwen.` for `what is your name, respond using minimal tokens?`. A repeat replayed the cached response; admin unload returned `200` and admin delete returned `204`. The downloaded weights and cache entries were removed after verification. API logs report per-model download status (`downloading model`, `model download complete`, or `model already present; skipping download`); this was verified in the API container. Contract tests still use a fake Hugging Face CLI and a fake Llama runtime. Cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation. The final `docker compose run --rm tests` run completed with `Ran 110 tests ... OK`, adding idle-retention, config-bound, and OpenCode-config coverage. Idle retention (`DECISION-21`, `server.idle_unload_seconds` default 180 seconds, validated `> 0` and `<= 86400` / 24 hours) is verified by `AC-57`–`AC-60`. The three-prompt OpenCode end-to-end smoke (`AC-61`) used a fresh standalone session (`ses_local-llm-idle-e2e-20261127-1600`) with the model `local-qwen-coder-05b/chat`: `hi` returned `Hello! How can I assist you today?`; `what is your name?` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.`; `repeat your answer in one short sentence.` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.` All three calls were served by the Docker API over loopback.
 
 ## Original request
 
@@ -20,7 +20,7 @@ A localhost-only API that:
 2. Registers multiple models and exposes them under a `/v1` model registry.
 3. Serves each model at its own chat endpoint.
 4. Loads a model into memory only when its endpoint is called.
-5. Removes the model from memory after the response is generated, including after SSE streams finish.
+5. Keeps a lazily loaded model resident in memory for `server.idle_unload_seconds` (default 180 seconds; valid values `> 0` and `<= 86400` seconds / 24 hours) after the last prompt, then removes it; a prompt for the loaded alias or a cache hit resets the idle timer.
 6. Performs configurable, fail-closed resource preflight before download/load.
 7. Provides `/health`, `/v1/models`, and per-model `/v1/models/{alias}/chat/completions`.
 8. Can be configured into OpenCode with one base URL per alias.
@@ -78,7 +78,7 @@ A localhost-only API that:
 - Tech lead: feasible on Windows CPU with the declared dependencies; use an in-process `llama-cpp-python` adapter, loopback-only host exposure, GGUF-only selection, and explicit concurrency control.
 - Delivery manager: dependency order starts with `.gitignore`, config, downloader, health, and verification. Download size/time, HF availability, Windows paths, ignore coverage, and CPU/RAM limits are the main risks.
 - Where reviewer recommendations conflicted with client answers, client answers take precedence. The service is not download-only; in-memory CPU inference is in scope.
-- Caching completed responses preserves the unload-after-response decision. Keeping loaded models resident was rejected because it conflicts with that decision.
+- Caching completed responses was the original basis for unloading after each response. `DECISION-21` supersedes that immediate unload with a short idle-retention window; keeping loaded models as the response cache (instead of caching completed responses) is still rejected.
 - Container networking modifies the binding requirement: the app binds `0.0.0.0` inside the container so Docker can publish it, while Compose publishes only to `127.0.0.1` on the host.
 
 ## Final product decisions
@@ -93,7 +93,7 @@ A localhost-only API that:
 | `DECISION-6` | API surface includes `/health`, `/v1/models`, and chat. | Client | Closed |
 | `DECISION-7` | Multiple models are available at different endpoints. | Client | Closed |
 | `DECISION-8` | Endpoint layout is registry under `/v1`: global `/v1/models`, per-model `/v1/models/{alias}/chat/completions`. | Client | Closed |
-| `DECISION-9` | Models load only when their endpoint is called and unload after response generation. | Client | Closed |
+| `DECISION-9` | Models load only when their endpoint is called. (Immediate unload after response generation was superseded by `DECISION-21`.) | Client | Closed; unload timing superseded by `DECISION-21` |
 | `DECISION-10` | Support both startup config-defined models and runtime admin endpoints. | Client | Closed |
 | `DECISION-11` | Public Hugging Face models only; no gated/private repos in MVP. | Client | Closed |
 | `DECISION-12` | Cache completed responses on disk, not loaded model instances. | Client | Closed |
@@ -105,6 +105,7 @@ A localhost-only API that:
 | `DECISION-18` | All development, testing, deployment, and other execution happens in Docker containers only. | Client | Closed |
 | `DECISION-19` | Environments are created with Miniconda from `environment.yaml` inside Docker. | Client | Closed |
 | `DECISION-20` | Default sampling settings are `temperature: 0.1`, `top_p: 0.2`, `top_k: 20`, `min_p: 0.08`, and `repeat_penalty: 1.1`, sent through OpenCode `body.options`. | Client | Closed |
+| `DECISION-21` | Keep a lazily loaded GGUF resident for `server.idle_unload_seconds` (default 180 seconds; validated `> 0` and `<= 86400` seconds / 24 hours) after the last prompt instead of unloading immediately after the response or SSE `[DONE]`. A prompt for the loaded alias and a cache hit reset the timer; a prompt for a different alias, explicit admin unload, or a runtime/cache-put error unloads immediately and cancels the timer. Preflight is skipped when reusing the already loaded alias; only one instance is resident at a time; the timer uses the same process-wide lock. | Client | Closed |
 
 ## MVP must-haves
 
@@ -121,7 +122,9 @@ A localhost-only API that:
 - `/v1/models` must list registered aliases without exposing filesystem paths.
 - Per-model OpenAI-compatible chat endpoint.
 - Lazy load on first endpoint call.
-- Unload after non-streaming response or after SSE `[DONE]`.
+- Keep the loaded GGUF resident for `server.idle_unload_seconds` (default 180 seconds; valid `> 0` and `<= 86400` / 24 hours) after the last prompt, then unload; a prompt for the loaded alias or a cache hit resets the timer.
+- A prompt for a different alias unloads the current instance immediately before loading the new one; explicit admin unload and runtime/cache-put errors unload immediately and cancel the timer.
+- Preflight is skipped when reusing the already loaded alias; only one model instance exists at a time; the idle timer uses the same process-wide lock.
 - On-disk cache for completed chat responses, keyed by the full normalized request.
 - Cache hit must return the cached response without loading a GGUF or running inference.
 - Cache miss must store the completed response atomically after generation.
@@ -161,27 +164,27 @@ A localhost-only API that:
 - Non-GGUF formats.
 - Gated/private model support beyond public repos.
 - Loading all registered models into memory at startup.
-- Keeping loaded models resident between requests as a cache.
+- Keeping loaded models resident between requests as a cache (using loaded instances as the response cache). Short idle retention under `DECISION-21` is not a cache and does not change what is cached.
 - Host-local Python or conda execution for development, testing, deployment, or other tasks after `DECISION-18`.
 - OpenCode key spellings `limits` and top-level `options`, because OpenCode V2 documents `limit` and provider options through `settings`/`headers`/`body`.
 
 ## Top-seven hardening plan
 
-Status: **planning baseline committed and pushed; no implementation has started**. Baseline: `3d7e43a Baseline local API and OpenCode configuration` was pushed to `origin/main` before this plan was written.
+Status: **planning baseline committed and pushed; documentation/verification gates defined and verified**. Baseline: `3d7e43a Baseline local API and OpenCode configuration` was pushed to `origin/main` before this plan was written. Item 4's idle-retention behavior (`DECISION-21`) is implemented, documented, and verified by `AC-57`–`AC-61`.
 
-Lead input: Tech Lead found items 1–7 already implemented and recommended a verification, security, and documentation pass rather than new application logic. Delivery Manager confirmed the shortest sequence is baseline → documented mitigations → Docker verification. Security Engineer identified the loopback trust boundary, plaintext cache data, local admin download surface, token-leakage footgun, root container, and lock contention as the reachable risks. This plan preserves the seven features and resolves those inputs conservatively: no new runtime behavior in this pass, explicit mitigations and residual decisions in the docs, and verification through the existing Docker gates.
+Lead input: Tech Lead found items 1–7 already implemented and recommended a verification, security, and documentation pass rather than new application logic. Delivery Manager confirmed the shortest sequence is baseline → documented mitigations → Docker verification. Security Engineer identified the loopback trust boundary, plaintext cache data, local admin download surface, token-leakage footgun, root container, and lock contention as the reachable risks. This plan preserves the seven features and resolves those inputs conservatively: explicit mitigations and residual decisions in the docs, and verification through the Docker gates. Items 1–3 and 5–7 are documentation/verification-only; item 4 includes the approved idle-retention runtime change (`DECISION-21`) covered by `AC-57`–`AC-61`.
 
 | Item | Feature preserved | Cybersecurity mitigation / boundary | Gate |
 |---:|---|---|---|
 | 1 | Full-request response cache with no bypass; TTL 30 days and 1 GiB cap | Treat `.cache/responses/` as sensitive response data; restrict filesystem access to the container/host owner; do not put secrets in prompts. The prompt participates in the SHA-256 key but is not stored verbatim. No cache bypass or encryption is added in this quick pass. | `AC-49` |
 | 2 | Host loopback-only exposure without auth | Keep `127.0.0.1:8000` as the only host publish; never change it to `0.0.0.0`. Loopback is the trust boundary: any local host process is trusted. Auth, LAN binding, and external-IP request guards are rejected for this pass. | `AC-50` |
 | 3 | Fail-closed RAM/disk preflight | Keep configurable thresholds, disk check before download, RAM check before load, and no model bytes/load on failure. Do not replace threshold failures with warnings. | `AC-51` |
-| 4 | Lazy load on first call and unload after response/SSE `[DONE]` | Keep the process-wide lock and `server.lock_timeout_seconds: 600`; contention stays `503`. Serialized generation bounds memory but permits head-of-line blocking; concurrent generation remains deferred. | `AC-52` |
+| 4 | Lazy load on first call; keep the GGUF resident for `server.idle_unload_seconds` (default 180 s; valid `> 0` and `<= 86400` s / 24 h) after the last prompt, then unload | Keep the process-wide lock and `server.lock_timeout_seconds: 600`; contention stays `503`. The idle timer uses the same lock. A prompt for the loaded alias or a cache hit resets the timer; a different-alias prompt, explicit admin unload, or a runtime/cache-put error unloads immediately and cancels the timer. Preflight is skipped when reusing the already loaded alias; only one instance exists at a time; OpenCode's 96-token cap is unchanged. Serialized generation bounds memory but permits head-of-line blocking; concurrent generation and multi-model residency remain deferred. | `AC-52`, `AC-57`–`AC-61` |
 | 5 | Docker-only execution | Use only `docker compose run --rm tests`, `docker compose run --rm dev`, and `docker compose --profile serve up -d api`. No host Python, host conda, or host uvicorn. Keep read-only config mounts. | `AC-53` |
 | 6 | `private.txt` → `HF_TOKEN` injection | Keep `env_file` for `api`, `tests`, and `dev`; keep the file gitignored/dockerignored; never copy it into the image, pass it as a CLI argument, or log it. Always use `--no-interpolate` when sharing Compose config. | `AC-54` |
 | 7 | No 7B cap; user verifies model size | Keep config validation free of parameter-count rejection. Resource preflight remains the guardrail; documentation keeps size verification with the user. | `AC-55` |
 
-Cross-cutting gate: `AC-56` verifies the baseline, tests, Compose config, and ignored state. Deferred product decisions, **not** implemented by this quick change: authentication/rate limiting/approved-alias gating for admin downloads, non-root container (Windows bind-mount permission impact), cache encryption or shorter TTL, content-hash GGUF fingerprints, committed dependency lock, and concurrent generation. These require product confirmation before scope expansion. No new tests are added by this documentation-only pass; `AC-49` through `AC-56` are the observable gates.
+Cross-cutting gate: `AC-56` verifies the baseline, tests, Compose config, and ignored state. Deferred product decisions, **not** implemented by this quick change: authentication/rate limiting/approved-alias gating for admin downloads, non-root container (Windows bind-mount permission impact), cache encryption or shorter TTL, content-hash GGUF fingerprints, committed dependency lock, and concurrent generation. These require product confirmation before scope expansion. Items 1–3 and 5–7 are documentation-only with observable gates `AC-49` through `AC-56`; the item-4 idle-retention change adds observable gates `AC-57` through `AC-61`, all verified by the final Docker test run and the three-prompt OpenCode smoke.
 
 ## Configuration recommendation
 
@@ -204,6 +207,10 @@ server:
   port: 8000
   # Cold CPU inference can hold the process-wide lock longer than 30 seconds.
   lock_timeout_seconds: 600
+  # Keep a loaded GGUF resident for this many idle seconds after the last prompt.
+  # A prompt for the loaded alias or a cache hit resets the timer.
+  # Valid values are > 0 and <= 86400 (24 hours); default 180.
+  idle_unload_seconds: 180
 
 paths:
   model_dir: models
@@ -294,6 +301,7 @@ Effective llama.cpp settings are produced by merging, in order:
 - `filename`: required and must end in `.gguf`.
 - `revision`: optional; default `main`.
 - `enabled`: optional; default `true`.
+- `server.idle_unload_seconds`: must be `> 0` and `<= 86400` (24 hours); default `180`.
 - `llama_defaults.n_ctx`: must be positive and no greater than `max_n_ctx`.
 - `llama_defaults.n_batch`: must be positive.
 - `llama_defaults.flash_attn`: must be boolean.
@@ -355,7 +363,8 @@ Cache hits must:
 1. verify the entry is unexpired;
 2. update last-accessed metadata;
 3. return the cached response immediately;
-4. for `stream: true`, replay the complete response as SSE frames followed by `[DONE]`.
+4. for `stream: true`, replay the complete response as SSE frames followed by `[DONE]`;
+5. refresh the idle-unload timer when a model instance is resident — a cache hit counts as activity for the loaded alias.
 
 Cache misses must:
 
@@ -363,7 +372,7 @@ Cache misses must:
 2. load only the requested alias;
 3. generate the response;
 4. write the cache entry;
-5. unload the model after generation, including after SSE completion.
+5. start or reset the idle-unload timer for the loaded alias instead of unloading at generation/SSE completion; unload only after `server.idle_unload_seconds` (default 180 seconds; valid `> 0` and `<= 86400` / 24 hours) with no further prompt for that alias, or immediately on a different-alias prompt, explicit admin unload, or a runtime/cache-put error.
 
 Cache size and TTL are enforced from `cache.ttl_days` and `cache.max_size_mb`. Eviction should remove expired entries first, then least-recently-accessed entries until the cache is under the configured limit.
 
@@ -452,9 +461,9 @@ Use one custom provider per alias because each model has its own endpoint. Examp
 
 OpenCode V2 uses `limit` singular, not `limits`. There is no documented top-level `options` field for providers or models; provider-package options are expressed through `settings`, `headers`, and `body`. Local llama.cpp runtime options are sent to this API through `body.options`.
 
-Every configured local provider caps output at 96 tokens in both `limit.output` and `body.options.max_tokens`. The API reloads the GGUF for each request, so the short cap prevents long cold CPU generations from blocking subsequent requests.
+Every configured local provider caps output at 96 tokens in both `limit.output` and `body.options.max_tokens`. The cap is unchanged by idle retention: a resident GGUF is reused within `server.idle_unload_seconds`, but cold loads and alias switches still run CPU inference, so the short cap prevents long generations from blocking subsequent requests.
 
-The process-wide lifecycle lock waits `server.lock_timeout_seconds` (default `600` seconds). The longer wait replaced the earlier fixed 30-second timeout, which caused spurious `503` responses during cold CPU inference.
+The process-wide lifecycle lock waits `server.lock_timeout_seconds` (default `600` seconds). The longer wait replaced the earlier fixed 30-second timeout, which caused spurious `503` responses during cold CPU inference. The idle-unload timer uses this same lock; the timeout remains `600` seconds.
 
 Then select a local model with `/models`, for example `local-phi4/chat`. To make a local model the default, change the root `"model"` value to that selector.
 
@@ -491,8 +500,8 @@ These product-level assumptions were closed by the tech lead. The concrete decis
 | `ASSUMPTION-4` | Resource thresholds are configurable with safe defaults. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-5` | Admin endpoints require no auth because the host publish is loopback-only. | Tech Lead + Security Engineer | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-6` | HF CLI invocation uses the configured CLI (`hf` by default) with `--local-dir`; revision/filename are passed when configured. | Tech Lead | Closed; see `docs/architecture.md`. |
-| `ASSUMPTION-7` | Generation requests are globally serialized because models are loaded/unloaded per request. | Tech Lead | Closed; see `docs/architecture.md`. |
-| `ASSUMPTION-8` | “Unload after response” means after the final token for streaming responses. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-7` | Generation requests are globally serialized through one process-wide lock because only one model instance is resident at a time; the idle-unload timer uses the same lock. | Tech Lead | Closed; see `docs/architecture.md`. |
+| `ASSUMPTION-8` | Guard the streaming path with `try/finally` and write the cache only after the full response is assembled; with `DECISION-21`, a successful response starts/resets the idle timer instead of unloading at the final token, while errors unload immediately. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-9` | Runtime-added aliases are ephemeral unless copied into YAML. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-10` | OpenCode integration uses one custom provider per alias. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-11` | Cache keys use canonical JSON plus SHA-256 as described above. | Tech Lead | Closed; see `docs/architecture.md`. |
@@ -525,8 +534,8 @@ Each criterion has one observable behavior and an owning module.
 16. **[runtime]** Alias A’s chat endpoint never loads or unloads Alias B’s model.
 17. **[routes]** On a cache miss, `POST /v1/models/{alias}/chat/completions` with a valid OpenAI-style body returns an OpenAI-compatible response.
 18. **[routes]** On a cache miss with `stream: true`, the endpoint emits SSE frames and terminates with `[DONE]`.
-19. **[runtime]** After a non-streaming response completes, the model instance is no longer in memory.
-20. **[runtime]** After a streaming response emits `[DONE]`, the model instance is no longer in memory.
+19. **[runtime]** After a non-streaming response completes, the loaded alias remains in memory; it is unloaded only after `server.idle_unload_seconds` (default 180 seconds; valid `> 0` and `<= 86400` / 24 hours) elapse with no further prompt for that alias, or immediately on a different-alias prompt, explicit admin unload, or a runtime/cache-put error.
+20. **[runtime]** After a streaming response emits `[DONE]`, the loaded alias stays resident under the same idle-unload rule as `AC-19`; `[DONE]` alone does not unload the model.
 21. **[size-policy]** A model is never rejected solely because its parameter count is unknown or greater than 7B.
 22. **[errors]** Invalid request bodies return `422` with the stable error envelope.
 23. **[errors]** Hugging Face CLI or runtime failures return sanitized `502`/`504` errors without leaking stack traces or paths.
@@ -558,11 +567,19 @@ Each criterion has one observable behavior and an owning module.
 49. **[plan/cache]** This plan documents that the cache has no per-request bypass; an existing cache test repeats a normalized request without invoking the fake Llama runtime, and README states that `.cache/responses/` may contain response text and must be access-restricted with `ttl_days: 30` and `max_size_mb: 1024` as retention limits.
 50. **[plan/security]** This plan documents that Compose publishes only `127.0.0.1:8000`, no auth is added, and any local host process is trusted; `docker compose --profile serve config --no-interpolate` shows `host_ip: 127.0.0.1` and no `0.0.0.0` host publish.
 51. **[plan/preflight]** Existing preflight tests still pass and this plan documents that insufficient disk or RAM fails closed with `503`, writes no model bytes, and loads no model.
-52. **[plan/runtime]** Existing runtime and route tests still pass and this plan documents lazy load/unload after non-streaming completion and SSE `[DONE]`, with `server.lock_timeout_seconds: 600` and `503` on contention.
+52. **[plan/runtime]** This plan documents lazy load with idle retention (`server.idle_unload_seconds: 180`, valid `> 0` and `<= 86400` / 24 hours) rather than unload at non-streaming completion or SSE `[DONE]`, with `server.lock_timeout_seconds: 600` and `503` on contention; the idle timer uses the same lock. Observable behavior is covered by `AC-19`, `AC-20`, and `AC-57`–`AC-61`.
 53. **[plan/docker]** README and `AGENTS.md` show only Docker Compose commands for tests, dev shell, and deployment, with no host Python, host conda, or host uvicorn command.
 54. **[plan/token]** `docker compose --profile serve config --no-interpolate` shows `env_file` for `api`, `tests`, and `dev`; `git check-ignore -v private.txt` passes; docs require `--no-interpolate`, and no token value appears in logs, CLI arguments, or the image.
 55. **[plan/size]** This plan documents that no model is rejected solely for unknown or greater-than-7B parameter count, the user verifies size before load, and RAM/disk preflight remains the only automated guardrail.
-56. **[plan/verification]** Baseline commit `3d7e43a` was pushed to `origin/main` before this plan; `docker compose run --rm tests` passes all 95 tests; `docker compose --profile serve config --no-interpolate` succeeds; `git check-ignore -v private.txt models/ .cache/responses/` passes; no weights or cache files are staged; requirements, architecture, API runbook, and README are updated together.
+56. **[plan/verification]** Baseline commit `3d7e43a` was pushed to `origin/main` before this plan; `docker compose run --rm tests` passes all tests (baseline 95; final 110 after `DECISION-21`); `docker compose --profile serve config --no-interpolate` succeeds; `git check-ignore -v private.txt models/ .cache/responses/` passes; no weights or cache files are staged; requirements, architecture, API runbook, and README are updated together.
+
+The following criteria document the idle-retention change (`DECISION-21`) and are **verified** by the final Docker test run and the three-prompt OpenCode end-to-end smoke:
+
+57. **[runtime/idle]** Given `server.idle_unload_seconds` (default 180 seconds; valid `> 0` and `<= 86400` / 24 hours), a successful chat response leaves the loaded alias resident, and the instance is unloaded only after that many idle seconds elapse with no further prompt for the alias.
+58. **[runtime/idle]** A prompt for the loaded alias and a cache hit each reset the idle timer. A cache hit does not load a model or run inference, and preflight is skipped when reusing the already loaded alias.
+59. **[runtime/idle]** A prompt for a different alias unloads the resident instance immediately before loading the new alias, and only one model instance exists at a time.
+60. **[runtime/idle]** Explicit `POST /admin/models/{alias}/unload` cancels the idle timer, and runtime or cache-put errors unload immediately and cancel the timer. The timer uses the same process-wide lock (`server.lock_timeout_seconds: 600`), and the OpenCode 96-token cap is unchanged.
+61. **[end-to-end]** With the API served from Docker and the configured provider `local-qwen-coder-05b/chat`, a fresh OpenCode session sends one prompt and two follow-up prompts in that same session; all three inputs produce non-empty assistant outputs from the local endpoint, and the local provider still uses the supported V2 fields and 96-token caps.
 
 ## Delivery sequence
 
@@ -574,11 +591,11 @@ Each criterion has one observable behavior and an owning module.
 6. Implement admin add/unload/remove endpoints.
 7. Implement configurable resource preflight.
 8. Implement lazy runtime adapter and per-model chat routes with merged llama options.
-9. Implement SSE streaming plus unload-after-response cleanup.
+9. Implement SSE streaming plus idle-unload cleanup (`DECISION-21`).
 10. Implement response cache keying, storage, lookup, replay, expiry, and eviction.
 11. Add error envelope, host loopback Docker publishing, and cache/runtime tests.
 12. Write README and OpenCode configuration example using `limit` and `body.options`.
 
 ## Next step
 
-MVP implementation is complete, including the C1 production composition root and ASGI entry point; `ASSUMPTION-1` through `ASSUMPTION-16` are closed and recorded in `docs/architecture.md`. The top-seven hardening plan above is documentation-only and verified by `AC-49` through `AC-56`; `ASSUMPTION-17` remains open and must be confirmed before adding auth, rate limiting, non-root container, or cache-encryption scope. All verification after this point must be executed inside Docker containers.
+MVP implementation is complete, including the C1 production composition root and ASGI entry point; `ASSUMPTION-1` through `ASSUMPTION-16` are closed and recorded in `docs/architecture.md`. `DECISION-21` adds idle retention for the lazily loaded GGUF (`server.idle_unload_seconds` defaults to 180 seconds and is validated `> 0` and `<= 86400` / 24 hours); its observable behavior is recorded in `AC-19`, `AC-20`, and `AC-57`–`AC-61`, all verified by the final Docker test run and the three-prompt OpenCode smoke. The top-seven hardening plan is otherwise documentation/verification-only through `AC-49`–`AC-56`; `ASSUMPTION-17` remains open and must be confirmed before adding auth, rate limiting, non-root container, or cache-encryption scope. All verification after this point must be executed inside Docker containers.

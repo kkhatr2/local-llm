@@ -58,13 +58,20 @@ class _RuntimeStub:
     def __init__(self) -> None:
         self.loaded = False
         self.unload_calls = 0
+        self.idle_deadline = None
+        self.cancel_idle_unload_calls = 0
 
     def is_loaded(self) -> bool:
         return self.loaded
 
     def unload(self) -> None:
+        self.cancel_idle_unload()
         self.loaded = False
         self.unload_calls += 1
+
+    def cancel_idle_unload(self) -> None:
+        self.cancel_idle_unload_calls += 1
+        self.idle_deadline = None
 
     def load(self, model_path, options) -> None:
         self.loaded = True
@@ -206,6 +213,8 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"alias": "alias-a", "unloaded": True})
         self.assertEqual(self.runtime.unload_calls, 1)
+        self.assertEqual(self.runtime.cancel_idle_unload_calls, 1)
+        self.assertIsNone(self.runtime.idle_deadline)
         self.assertEqual(self.lock.acquire_calls, 1)
         self.assertEqual(self.lock.release_calls, 1)
         self.assertEqual(
@@ -222,6 +231,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"alias": "alias-a", "unloaded": False})
         self.assertEqual(self.runtime.unload_calls, 0)
+        self.assertEqual(self.runtime.cancel_idle_unload_calls, 0)
         self.assertEqual(self.lock.acquire_calls, 1)
         self.assertEqual(self.lock.release_calls, 1)
         self.assertEqual(

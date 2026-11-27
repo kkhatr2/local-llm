@@ -36,6 +36,7 @@ class ConfigLoaderTests(unittest.TestCase):
         self.assertTrue(settings.llama_defaults.flash_attn)
         self.assertTrue(settings.cache_config.enabled)
         self.assertEqual(settings.server.lock_timeout_seconds, 600)
+        self.assertEqual(settings.server.idle_unload_seconds, 180)
 
     def test_env_override_and_explicit_path(self) -> None:
         seen: list[str] = []
@@ -92,6 +93,41 @@ class ConfigLoaderTests(unittest.TestCase):
             ConfigLoader(env={}, reader=lambda _: bad).load()
 
         self.assertIn("lock_timeout_seconds", str(context.exception))
+
+    def test_invalid_idle_unload_rejected_with_field_name(self) -> None:
+        bad = VALID_YAML.replace(
+            "llama_defaults:\n",
+            "server:\n  idle_unload_seconds: 0\nllama_defaults:\n",
+            1,
+        )
+
+        with self.assertRaises(ValueError) as context:
+            ConfigLoader(env={}, reader=lambda _: bad).load()
+
+        self.assertIn("idle_unload_seconds", str(context.exception))
+
+    def test_idle_unload_seconds_upper_bound_rejected_with_field_name(self) -> None:
+        bad = VALID_YAML.replace(
+            "llama_defaults:\n",
+            "server:\n  idle_unload_seconds: 86401\nllama_defaults:\n",
+            1,
+        )
+
+        with self.assertRaises(ValueError) as context:
+            ConfigLoader(env={}, reader=lambda _: bad).load()
+
+        self.assertIn("idle_unload_seconds", str(context.exception))
+
+    def test_idle_unload_seconds_upper_boundary_accepts_86400(self) -> None:
+        good = VALID_YAML.replace(
+            "llama_defaults:\n",
+            "server:\n  idle_unload_seconds: 86400\nllama_defaults:\n",
+            1,
+        )
+
+        settings = ConfigLoader(env={}, reader=lambda _: good).load()
+
+        self.assertEqual(settings.server.idle_unload_seconds, 86400)
 
     def test_missing_required_field_names_field(self) -> None:
         bad = VALID_YAML.replace("    repo_id: owner/name\n", "", 1)

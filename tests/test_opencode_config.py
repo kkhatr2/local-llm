@@ -57,6 +57,22 @@ class OpenCodeConfigTests(unittest.TestCase):
             self.assertEqual(model["limit"]["output"], 96, name)
             self.assertEqual(model["body"]["options"]["max_tokens"], 96, name)
 
+    def test_local_qwen_coder_05b_provider_uses_ollama_compatible_contract(self) -> None:
+        local = self._local_providers()
+        provider = local["local-qwen-coder-05b"]
+        self.assertEqual(
+            provider["settings"]["baseURL"],
+            "http://127.0.0.1:8000/v1/models/qwen25-coder-05b",
+        )
+        self.assertEqual(provider["models"]["chat"]["modelID"], "qwen25-coder-05b")
+        model = provider["models"]["chat"]
+        self.assertNotIn("limits", model)
+        self.assertIn("limit", model)
+        self.assertIn("body", model)
+        self.assertIn("options", model["body"])
+        self.assertEqual(model["limit"]["output"], 96)
+        self.assertEqual(model["body"]["options"]["max_tokens"], 96)
+
 
 if __name__ == "__main__":
     unittest.main()

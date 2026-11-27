@@ -54,7 +54,7 @@ HF_TOKEN=<token>
 - Treat `.cache/responses/` as sensitive response data. Entries may contain response text and echoed user content; the prompt participates in the SHA-256 key but is not stored verbatim. Restrict filesystem access, do not put secrets in prompts, and treat `ttl_days: 30` / `max_size_mb: 1024` as retention limits rather than encryption.
 - Always validate with `docker compose --profile serve config --no-interpolate`. Plain `docker compose config` resolves and prints `HF_TOKEN`.
 - Prefer startup-configured aliases. `POST /admin/models` is a synchronous public-model download with a configured timeout and fail-closed disk preflight; async jobs and approved-alias gating are deferred.
-- Call `POST /admin/models/{alias}/unload` before `DELETE /admin/models/{alias}` if the runtime instance must be released; `DELETE` unregisters only.
+- Because a GGUF can stay resident for `server.idle_unload_seconds` (default 180 s; valid `> 0` and `<= 86400` s / 24 hours) after its last prompt, call `POST /admin/models/{alias}/unload` before `DELETE /admin/models/{alias}` if the instance must be released immediately; `DELETE` unregisters only.
 - Auth/rate limiting, non-root container, cache encryption, content-hash fingerprints, and concurrent generation are deferred product decisions under `ASSUMPTION-17`.
 
 Enabled models from `local_llm.yaml` are downloaded at startup by the app lifespan. A missing GGUF on a later request is restored on demand (see chat completions below).
@@ -83,7 +83,7 @@ Application-level failures (domain exceptions, request validation, and unexpecte
 | 504 | `download_timeout` / `runtime_timeout` | Download timeout (`DownloadTimeoutError`) / generation timeout (`TimeoutError`) |
 | 500 | `internal_error` | Unmapped unexpected failure |
 
-The process-wide model lock waits `server.lock_timeout_seconds` from `local_llm.yaml` (default `600` seconds); failing to acquire it returns `503 resource_unavailable`.
+The process-wide model lock waits `server.lock_timeout_seconds` from `local_llm.yaml` (default `600` seconds); failing to acquire it returns `503 resource_unavailable`. The idle-unload timer uses this same lock; the timeout remains `600` seconds.
 
 ## Endpoint reference
 
@@ -118,7 +118,7 @@ Purpose: list registered aliases in OpenAI-compatible model-list shape.
 
 ### `POST /v1/models/{alias}/chat/completions`
 
-Purpose: OpenAI-compatible chat completion (JSON or SSE) for one registered alias. The alias is loaded only for this request and unloaded after the response.
+Purpose: OpenAI-compatible chat completion (JSON or SSE) for one registered alias. The alias is loaded lazily on first use and then kept resident for `server.idle_unload_seconds` (default 180 seconds; valid `> 0` and `<= 86400` seconds / 24 hours) after the last prompt rather than unloaded at response completion or SSE `[DONE]`.
 
 - Path parameter: `alias` (string; must already be registered).
 - Request body: a `ChatCompletionRequest` object.
@@ -182,8 +182,8 @@ Notable errors: `404 not_found` (unknown alias), `422 validation_error` (invalid
 Side effects and ordering:
 
 1. Resolve the GGUF. If the registered file is missing, acquire the lock, re-check, run fail-closed download preflight, download into `models/<alias>/`, and mark downloaded — this happens **before** the cache key is computed.
-2. Compute the cache key and check the cache. On a hit, replay the response (SSE if `stream: true`) with **no** load, preflight-load, or inference.
-3. On a miss: acquire the lock, re-check cache, run fail-closed load preflight, load the model with merged load options, mark the alias `LOADED`, generate with `stream: false`, write the completed response to cache, then unload and mark `UNLOADED` in a `finally` block. Errors are not cached; unload still runs on failure.
+2. Compute the cache key and check the cache. On a hit, replay the response (SSE if `stream: true`) with **no** load, preflight-load, or inference, and refresh the idle-unload timer if a model instance is resident.
+3. On a miss: acquire the lock and re-check the cache. If the requested alias is already loaded, skip load preflight and reuse that instance; if a different alias is resident, unload it immediately before loading the new alias (with fail-closed load preflight). Mark the alias `LOADED`, generate with `stream: false`, and write the completed response to cache. On success, start/reset the idle-unload timer instead of unloading; the instance is unloaded after `server.idle_unload_seconds` (default 180 seconds; valid `> 0` and `<= 86400` / 24 hours) with no further prompt for that alias. On a runtime or cache-put error, unload immediately and cancel the timer. Errors are not cached. Only one instance is resident at a time, and the idle timer uses the same process-wide lock (`server.lock_timeout_seconds: 600`).
 
 Option merge order (later sources win):
 
@@ -254,7 +254,7 @@ No filesystem path is returned.
 
 ### `POST /admin/models/{alias}/unload`
 
-Purpose: unload the alias's in-memory model instance; a no-op when it is not loaded.
+Purpose: unload the alias's in-memory model instance and cancel its idle-unload timer; a no-op when it is not loaded.
 
 - Path parameter: `alias` (string; must be registered).
 - Request body: none.
@@ -267,7 +267,7 @@ Purpose: unload the alias's in-memory model instance; a no-op when it is not loa
 When not loaded, returns `200` with `{"alias": "alias-a", "unloaded": false}`.
 
 - Errors: `404 not_found` (unknown alias), `503 resource_unavailable` (lock contention), `500 internal_error`.
-- Side effects: under the process lock, if the registry state is `LOADED` and the runtime holds an instance, unload the runtime and set state `UNLOADED`. The GGUF file and cache are untouched.
+- Side effects: under the process lock, cancel any pending idle unload and, if the registry state is `LOADED` and the runtime holds an instance, unload it immediately and set state `UNLOADED`. This releases a resident GGUF before its idle deadline. The GGUF file and cache are untouched.
 
 ### `DELETE /admin/models/{alias}`
 
@@ -281,5 +281,6 @@ Purpose: unregister an alias without deleting its weights or changing the runnin
 
 ## Verification status
 
-- Verified inside Docker: all 95 contract tests via `docker compose run --rm tests`, including every route above, cache hit/miss, SSE replay, 404/409/422/503/502 mappings, lazy load/unload, the OpenCode-config checks, the container-environment token check, and capture of the model output for `what is your name, respond using minimal tokens?`. `docker compose --profile serve config --no-interpolate` confirms the loopback-only publish, `env_file`, and read-only config mount.
+- Verified inside Docker: the final 110 contract tests via `docker compose run --rm tests`, including every route above, cache hit/miss, SSE replay, 404/409/422/503/502 mappings, lazy loading, idle retention, the OpenCode-config checks, the container-environment token check, and capture of the model output for `what is your name, respond using minimal tokens?`. `docker compose --profile serve config --no-interpolate` confirms the loopback-only publish, `env_file`, and read-only config mount. Idle retention (`DECISION-21`, `AC-57`–`AC-60`) is verified.
 - Verified: a token-authenticated real-model smoke test inside Docker downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` with `hf` without the unauthenticated warning. From host loopback, `GET /health`, `GET /v1/models`, and `POST /v1/models/qwen25-coder-05b/chat/completions` returned `200`; the prompt `what is your name, respond using minimal tokens?` produced `I am Qwen.`. A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Weights and cache entries were removed afterward. Contract tests continue to use fakes.
+- Verified (`AC-61`): a fresh standalone OpenCode session (`ses_local-llm-idle-e2e-20261127-1600`) using `local-qwen-coder-05b/chat` sent `hi`, then `what is your name?`, then `repeat your answer in one short sentence.`. The outputs were `Hello! How can I assist you today?`, `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.`, and `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.` All three calls were served by the Docker API over loopback.
