@@ -98,9 +98,11 @@ class _FakeLock:
         self.available = True
         self.acquire_calls = 0
         self.release_calls = 0
+        self.timeouts: list[float] = []
 
     def acquire(self, timeout=None) -> bool:
         self.acquire_calls += 1
+        self.timeouts.append(timeout)
         return self.available
 
     def release(self) -> None:
@@ -352,6 +354,9 @@ class ChatRoutesTests(unittest.TestCase):
         )
         self.assertEqual(self.runtime.load_calls, [])
         self.assertEqual(self.lock.release_calls, 0)
+        self.assertEqual(
+            self.lock.timeouts, [self.settings.server.lock_timeout_seconds]
+        )
 
     def test_runtime_failure_returns_sanitized_502_and_unloads(self) -> None:
         self.runtime.fail_chat = True

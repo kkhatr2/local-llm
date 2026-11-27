@@ -74,7 +74,7 @@ Application-level failures (domain exceptions, request validation, and unexpecte
 | 504 | `download_timeout` / `runtime_timeout` | Download timeout (`DownloadTimeoutError`) / generation timeout (`TimeoutError`) |
 | 500 | `internal_error` | Unmapped unexpected failure |
 
-The process-wide model lock has a 30-second timeout; failing to acquire it returns `503 resource_unavailable`.
+The process-wide model lock waits `server.lock_timeout_seconds` from `local_llm.yaml` (default `600` seconds); failing to acquire it returns `503 resource_unavailable`.
 
 ## Endpoint reference
 
@@ -272,5 +272,5 @@ Purpose: unregister an alias without deleting its weights or changing the runnin
 
 ## Verification status
 
-- Verified inside Docker: all 91 contract tests via `docker compose run --rm tests`, including every route above, cache hit/miss, SSE replay, 404/409/422/503/502 mappings, lazy load/unload, the container-environment token check, and capture of the model output for `what is your name, respond using minimal tokens?`. `docker compose --profile serve config --no-interpolate` confirms the loopback-only publish, `env_file`, and read-only config mount.
+- Verified inside Docker: all 95 contract tests via `docker compose run --rm tests`, including every route above, cache hit/miss, SSE replay, 404/409/422/503/502 mappings, lazy load/unload, the OpenCode-config checks, the container-environment token check, and capture of the model output for `what is your name, respond using minimal tokens?`. `docker compose --profile serve config --no-interpolate` confirms the loopback-only publish, `env_file`, and read-only config mount.
 - Verified: a token-authenticated real-model smoke test inside Docker downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` with `hf` without the unauthenticated warning. From host loopback, `GET /health`, `GET /v1/models`, and `POST /v1/models/qwen25-coder-05b/chat/completions` returned `200`; the prompt `what is your name, respond using minimal tokens?` produced `I am Qwen.`. A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Weights and cache entries were removed afterward. Contract tests continue to use fakes.

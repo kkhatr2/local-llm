@@ -9,8 +9,8 @@ from local_llm.preflight import ResourceError
 
 
 @contextmanager
-def locked(lock: Any) -> Iterator[None]:
-    if not lock.acquire(timeout=30):
+def locked(lock: Any, timeout: float = 600) -> Iterator[None]:
+    if not lock.acquire(timeout=timeout):
         raise ResourceError("server is busy")
     try:
         yield

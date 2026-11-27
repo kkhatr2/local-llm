@@ -3,6 +3,8 @@ server:
   # docker-compose.yml publishes only to 127.0.0.1 on the host.
   host: 0.0.0.0
   port: 8000
+  # Cold CPU inference can hold the process-wide lock longer than 30 seconds.
+  lock_timeout_seconds: 600
 
 paths:
   model_dir: models

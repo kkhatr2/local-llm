@@ -34,7 +34,7 @@ def create_admin_router(services: Any) -> APIRouter:
 
     @router.post("/models/{alias}/unload")
     def unload(alias: str) -> dict[str, Any]:
-        with locked(services.lock):
+        with locked(services.lock, services.settings.server.lock_timeout_seconds):
             entry = services.registry.get(alias)
             if entry.state != ModelState.LOADED or not services.runtime.is_loaded():
                 return {"alias": alias, "unloaded": False}

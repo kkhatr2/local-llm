@@ -37,7 +37,7 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 91 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, and container-environment tests and has been verified with this command. It includes a test that captures the model output for `what is your name, respond using minimal tokens?`.
+The full suite contains 95 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests and has been verified with this command. It includes a test that captures the model output for `what is your name, respond using minimal tokens?`.
 
 `docker-compose.yml` injects `HF_TOKEN` from the untracked `private.txt` into the `api`, `tests`, and `dev` services. Compose fails fast if the file is missing. `hf` and `huggingface_hub` read this variable automatically, so no token is passed on the command line or written to application code.
 
@@ -143,6 +143,10 @@ Each local model is exposed through its own custom provider because each alias h
 
 OpenCode V2 uses `limit` singular. Runtime llama.cpp options are sent through `body.options`; there is no supported top-level `options` field.
 
+Each local provider caps output at 96 tokens in both `limit.output` and `body.options.max_tokens`. The API reloads the GGUF for every request, so a short cap avoids long cold CPU generations.
+
+The process-wide model lifecycle lock waits `server.lock_timeout_seconds` from `local_llm.yaml` (default `600` seconds). Contention still returns `503 resource_unavailable`; the longer wait accommodates cold CPU inference.
+
 Example selector:
 
 ```text
@@ -162,6 +166,6 @@ After editing OpenCode configuration, use `/reload` if the change is not picked 
 
 ## Verification evidence
 
-- `docker compose run --rm tests` passes all 91 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, and container-environment tests inside the Miniconda container.
+- `docker compose run --rm tests` passes all 95 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests inside the Miniconda container.
 - `docker compose --profile serve config --no-interpolate` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, the host publish is loopback-only (`127.0.0.1:8000`), `env_file` is present for `api`, `tests`, and `dev`, and the config mount is read-only. Use `--no-interpolate` when sharing config output because plain `docker compose config` resolves and prints `HF_TOKEN`. `git check-ignore -v private.txt models/ .cache/responses/` confirms all three paths are ignored.
 - Real-model smoke test: **passed inside Docker with token-authenticated downloads**. The API container reported `HF_TOKEN configured: True`, and `hf` downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` without the unauthenticated-request warning. From the host loopback, `GET /health` and `GET /v1/models` returned `200`; `POST /v1/models/qwen25-coder-05b/chat/completions` with `what is your name, respond using minimal tokens?` returned `200` with content `I am Qwen.` (usage 39/5/44). A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Downloaded weights and cache entries were removed afterward. Contract tests still use a fake Hugging Face CLI and fake Llama runtime; cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.

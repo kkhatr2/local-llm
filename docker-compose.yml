@@ -36,6 +36,7 @@ services:
       PYTHONPATH: /app
     volumes:
       - ./local_llm.yaml:/app/local_llm.yaml:ro
+      - ./opencode.jsonc:/app/opencode.jsonc:ro
       - ./local_llm:/app/local_llm
       - ./tests:/app/tests
 

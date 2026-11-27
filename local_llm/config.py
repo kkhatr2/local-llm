@@ -43,6 +43,7 @@ class ServerSettings(BaseModel):
 
     host: str = "0.0.0.0"
     port: int = Field(default=8000, ge=1, le=65535)
+    lock_timeout_seconds: int = Field(default=600, gt=0)
 
 
 class PathSettings(BaseModel):

@@ -35,6 +35,7 @@ class ConfigLoaderTests(unittest.TestCase):
         self.assertEqual(settings.llama_defaults.n_batch, 512)
         self.assertTrue(settings.llama_defaults.flash_attn)
         self.assertTrue(settings.cache_config.enabled)
+        self.assertEqual(settings.server.lock_timeout_seconds, 600)
 
     def test_env_override_and_explicit_path(self) -> None:
         seen: list[str] = []
@@ -79,6 +80,18 @@ class ConfigLoaderTests(unittest.TestCase):
             ConfigLoader(env={}, reader=lambda _: bad).load()
 
         self.assertIn("n_ctx", str(context.exception))
+
+    def test_invalid_lock_timeout_rejected_with_field_name(self) -> None:
+        bad = VALID_YAML.replace(
+            "llama_defaults:\n",
+            "server:\n  lock_timeout_seconds: 0\nllama_defaults:\n",
+            1,
+        )
+
+        with self.assertRaises(ValueError) as context:
+            ConfigLoader(env={}, reader=lambda _: bad).load()
+
+        self.assertIn("lock_timeout_seconds", str(context.exception))
 
     def test_missing_required_field_names_field(self) -> None:
         bad = VALID_YAML.replace("    repo_id: owner/name\n", "", 1)

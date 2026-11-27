@@ -43,7 +43,7 @@ class ChatCompletionRequest(BaseModel):
 def _resolve_path(services: Any, alias: str) -> Any:
     """Download a missing GGUF under the process lock, re-checking first."""
 
-    with locked(services.lock):
+    with locked(services.lock, services.settings.server.lock_timeout_seconds):
         entry = services.registry.get(alias)
         path = entry.path
         if path is not None and services.downloader.exists(
@@ -132,7 +132,7 @@ def create_chat_router(services: Any) -> APIRouter:
                 )
             return JSONResponse(cached)
 
-        with locked(services.lock):
+        with locked(services.lock, services.settings.server.lock_timeout_seconds):
             cached = services.cache.get(key)
             if cached is not None:
                 if request.stream:

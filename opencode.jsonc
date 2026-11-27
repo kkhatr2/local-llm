@@ -4,12 +4,6 @@
   // free model IDs listed below to switch the default.
   "model": "opencode/big-pickle",
 
-  // Project instructions loaded by OpenCode.
-  "instructions": [
-    "AGENTS.md",
-    "docs/architecture.md",
-  ],
-
   // Free chat models currently listed in the OpenCode Console catalog:
   //   opencode/big-pickle
   //   opencode/tidepool-alpha-free
@@ -42,6 +36,8 @@
 
     // Local OpenAI-compatible server. OpenCode V2 uses "limit" (singular).
     // Runtime llama.cpp options are sent to the API through body.options.
+    // Each local model caps output at 96 tokens in both limit.output and
+    // body.options.max_tokens because every request reloads the GGUF.
     "local-phi4": {
       "name": "Local Phi-4 Mini",
       "package": "@opencode/ai/providers/openai-compatible",
@@ -61,7 +57,7 @@
           "modelID": "phi4-mini",
           "limit": {
             "context": 16384,
-            "output": 512,
+            "output": 96,
           },
           "capabilities": {
             "tools": false,
@@ -79,6 +75,7 @@
               "top_k": 20,
               "min_p": 0.08,
               "repeat_penalty": 1.1,
+              "max_tokens": 96,
             },
           },
         },
@@ -104,7 +101,7 @@
           "modelID": "qwen25-coder-3b",
           "limit": {
             "context": 16384,
-            "output": 512,
+            "output": 96,
           },
           "capabilities": {
             "tools": false,
@@ -122,6 +119,7 @@
               "top_k": 20,
               "min_p": 0.08,
               "repeat_penalty": 1.1,
+              "max_tokens": 96,
             },
           },
         },
@@ -147,7 +145,7 @@
           "modelID": "qwen25-coder-05b",
           "limit": {
             "context": 16384,
-            "output": 512,
+            "output": 96,
           },
           "capabilities": {
             "tools": false,
@@ -165,6 +163,7 @@
               "top_k": 20,
               "min_p": 0.08,
               "repeat_penalty": 1.1,
+              "max_tokens": 96,
             },
           },
         },
