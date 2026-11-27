@@ -266,7 +266,7 @@ class LlamaRuntimeAdapter:
             request_options,
         )
 
-    def chat(self, request: Any) -> Any:
+    def _completion(self, request: Any, *, stream: bool) -> Any:
         if not self.is_loaded():
             raise RuntimeError("model is not loaded")
         mapping = self._request_mapping(request)
@@ -275,8 +275,14 @@ class LlamaRuntimeAdapter:
             raise ValueError("messages is required")
         sampling = self._sampling_for(request)
         return self._instance.create_chat_completion(
-            messages=messages, stream=False, **sampling
+            messages=messages, stream=stream, **sampling
         )
+
+    def chat(self, request: Any) -> Any:
+        return self._completion(request, stream=False)
+
+    def chat_stream(self, request: Any) -> Any:
+        return self._completion(request, stream=True)
 
 
 __all__ = [

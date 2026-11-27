@@ -6,9 +6,9 @@ Authoritative scope: `docs/requirements.md`. Runtime settings: `local_llm.yaml`.
 
 ## Component count
 
-There are **15 modeled components**:
+There are **16 modeled components**:
 
-- **11 application components** that live in the Python service.
+- **12 application components** that live in the Python service.
 - **4 boundary components** that are external systems or container/client configuration.
 
 | ID | Component | Kind | Status | Responsibility |
@@ -28,6 +28,7 @@ There are **15 modeled components**:
 | C13 | HuggingFaceCli | Boundary | External | Performs public model downloads inside the container. |
 | C14 | LlamaCppLibrary | Boundary | External dependency | Provides `Llama(...)`, `create_chat_completion`, and streaming generation on CPU. |
 | C15 | AliasDownloadLocks | Application | Implemented | Provides per-alias download locks so slow download I/O stays outside the lifecycle lock without duplicate same-alias downloads. |
+| C16 | ChatStreamAssembler | Application | Implemented | Frames live OpenAI-compatible chunks as SSE and assembles one completed response for caching after successful stream exhaustion. |
 
 ## UML component view
 
@@ -50,6 +51,7 @@ flowchart LR
             CACHE["C9 ResponseCache"]
             ERR["C10 ErrorMapper"]
             LOCKS["C15 AliasDownloadLocks"]
+            STREAM["C16 ChatStreamAssembler"]
         end
 
         HFCLI["C13 HuggingFaceCli"]
@@ -67,6 +69,7 @@ flowchart LR
     ROOT --> CACHE
     ROOT --> ERR
     ROOT --> LOCKS
+    ROOT --> STREAM
 
     CFG -->|"settings and llama_defaults"| REG
     CFG -->|"thresholds and options"| PRE
@@ -78,6 +81,7 @@ flowchart LR
     CHAT --> RT
     CHAT --> ERR
     CHAT --> LOCKS
+    CHAT --> STREAM
 
     ADMIN --> REG
     ADMIN --> DL
@@ -212,11 +216,12 @@ classDiagram
 | C3 ModelRegistry | Configured or runtime-added model records | Stores alias-to-model mappings and lifecycle state. | Model records for routes and runtime. | Duplicate or unknown aliases are rejected. |
 | C4 HfCliDownloader | Model record and destination | Runs the configured Hugging Face CLI (`hf` by default) inside the container and verifies the file. | Local GGUF path. | Returns sanitized download error; writes no partial model path on rejected requests. |
 | C5 ResourcePreflight | Disk/RAM thresholds and model path | Estimates required disk before download and memory before load. | Approval to proceed. | Fails closed with `503` and does not download or load. |
-| C6 LlamaRuntimeAdapter | GGUF path, merged llama and sampling options, chat request | Calls `Llama(...)`, generates a response using merged `temperature`, `top_p`, `top_k`, `min_p`, and `repeat_penalty`, then keeps at most one resident instance until the idle-unload timer (`server.idle_unload_seconds`, default 180 s, valid `> 0` and `<= 86400` s / 24 h) expires or an immediate-unload condition fires. | OpenAI-compatible response or SSE stream. | Runtime or cache-put errors unload immediately and cancel the timer; runtime failures map to sanitized `502`/`504`. |
+| C6 LlamaRuntimeAdapter | GGUF path, merged llama and sampling options, chat request | Calls `Llama(...)`, generates either a completed response (`stream=False`) or native chunks (`stream=True`) using merged sampling options, then keeps at most one resident instance until the idle-unload timer expires or an immediate-unload condition fires. | OpenAI-compatible response or native chunk iterator. | Runtime or cache-put errors unload immediately and cancel the timer; runtime failures map to sanitized `502`/`504`. |
 | C7 ChatRoutes | OpenAI-compatible request body | Checks cache first; on miss, coordinates preflight, registry, runtime, cache write, and idle-unload scheduling; refreshes the timer on a prompt or cache hit for the resident alias and unloads before loading a different alias. | JSON or SSE response. | Invalid bodies return `422` through C10. |
 | C8 AdminRoutes | Add/unload/remove requests | Registers new models, unloads current instances (cancelling the idle timer), and removes aliases. | Updated registry state. | Invalid aliases or failed downloads return stable errors. |
 | C9 ResponseCache | Cache key and completed response | Hashes canonical request data, writes atomically, expires and evicts entries, replays SSE. | Cached response or cache miss. | Corrupt or expired entries are deleted and treated as misses. |
 | C10 ErrorMapper | Domain and runtime exceptions | Converts exceptions to stable HTTP status codes and sanitized envelopes. | HTTP error response. | Preserves safe cause metadata without leaking paths or stack traces. |
+| C16 ChatStreamAssembler | Native OpenAI-shaped chunk mappings | Emits each chunk as `data: <json>\n\n` and accumulates choice deltas into one `chat.completion` response. | Live SSE frames and a completed response for C9. | Empty streams fail; incomplete responses are never cached. Usage is included only when supplied by runtime chunks. |
 | C11 DockerRuntime | Dockerfile, Compose file, volumes, `private.txt` | Builds Miniconda image, injects `HF_TOKEN` into `api`/`tests`/`dev`, mounts `models/` and `.cache/`, and publishes only host loopback. | Containerized test/dev/API environments. | Invalid Compose config or missing `private.txt` fails before deployment. |
 | C12 OpenCodeClient | `opencode.jsonc` providers | Sends chat requests to alias-specific base URLs with `limit` and `body.options`. | Selectable local models. | Missing server appears as provider/model unavailable. |
 | C13 HuggingFaceCli | Public repo ID, filename, revision | Downloads exact GGUF file to `models/<alias>/`. | Files on mounted volume. | Auth, gated, or network failures propagate to C4. |
@@ -272,6 +277,8 @@ sequenceDiagram
     CHAT-->>OC: JSON or SSE response
     Note over CHAT,RT: The idle timer uses the process-wide lock (server.lock_timeout_seconds: 600). After server.idle_unload_seconds (default 180 s; valid > 0 and <= 86400 s / 24 h) with no prompt for the loaded alias, the instance is unloaded; a prompt for a different alias unloads it immediately before loading the new alias; explicit admin unload or a runtime/cache-put error unloads immediately and cancels the timer. Only one instance exists at a time; OpenCode's 96-token cap is unchanged.
 ```
+
+For a `stream: true` cache miss, C7 acquires the lifecycle lock before returning the response, performs the cache double-check and load/reuse setup, and obtains the native iterator from C6. C16 forwards each chunk immediately as SSE while assembling the completed response. C9 is written only after successful exhaustion; the lock is released after `[DONE]`, an error, or early close. Errors after streaming starts close the native iterator before immediate unload and emit C10's sanitized body as an SSE `error` event without `[DONE]`; client disconnect performs cleanup without an error frame. Cache hits continue to use C9 replay.
 
 ## UML state: model lifecycle
 
@@ -330,6 +337,7 @@ flowchart TB
 - I/O, clocks, randomness, subprocess calls, and retries stay at explicit edges.
 - Cache hits skip load preflight, model loading, and inference after GGUF path/fingerprint resolution; if the GGUF file is absent, download restoration and its fail-closed preflight still occur before key computation.
 - Download I/O never runs under the process-wide lifecycle lock. C15 serializes downloads per alias; C7 re-acquires the lifecycle lock only for short existence re-checks and registry mutation. C1 runs startup downloads concurrently up to `download.max_parallel_downloads` only after fail-closed preflight checks.
+- A streaming cache miss uses native llama.cpp chunks; a streaming cache hit uses C9 replay. C16 assembles one completed response for C9 only after successful exhaustion. The lifecycle lock covers the entire live stream; pre-response errors retain normal HTTP envelopes, while later errors use sanitized SSE error events. Partial responses are never cached.
 - At most one model instance is resident at a time. A prompt for a different alias unloads the current instance immediately before loading the new one; load preflight is skipped when reusing the already loaded alias and still runs on a cold load and on download restoration.
 - The idle-unload timer uses the same process-wide lock as generation (`server.lock_timeout_seconds: 600`; contention remains `503`). A prompt for the loaded alias or a cache hit resets the timer; explicit admin unload and runtime/cache-put errors unload immediately and cancel it. `server.idle_unload_seconds` defaults to `180` and is validated `> 0` and `<= 86400` (24 hours).
 - OpenCode's 96-token cap (`limit.output` and `body.options.max_tokens`) is unchanged by idle retention.
@@ -364,7 +372,7 @@ The baseline for this plan was pushed to `origin/main` as `3d7e43a` before any p
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
 - Verified: a token-authenticated real-model smoke test passed inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`). The API container reported `HF_TOKEN configured: True` and `hf download` restored the GGUF without the unauthenticated warning. From host loopback, `/health`, `/v1/models`, and the chat endpoint returned `200`; the prompt `what is your name, respond using minimal tokens?` produced `I am Qwen.`. A repeat replayed the cached response, admin unload returned `200`, admin delete returned `204`, and weights/cache entries were removed afterward.
 - Verified for this change: `DECISION-21` idle retention (`server.idle_unload_seconds` default 180 s, validated `> 0` and `<= 86400` s / 24 h) and its observable criteria `AC-57`–`AC-61` — timer reset on a prompt or cache hit, immediate unload on alias switch / explicit admin unload / runtime or cache-put error, preflight skipped when reusing the loaded alias, and a single resident instance. The idle timer shares the process-wide lock (`server.lock_timeout_seconds: 600`); the OpenCode 96-token cap is unchanged. The final Docker run passed 110 tests, and the three-prompt OpenCode end-to-end smoke confirmed inputs and outputs from the local provider.
-- Contract tests use a fake Hugging Face CLI and a fake Llama runtime. SSE replay reconstructs frames from stored complete responses by design; it is not true incremental streaming generation.
+- Contract tests use a fake Hugging Face CLI and a fake Llama runtime. Cache-hit SSE replay reconstructs frames from stored complete responses; cache-miss streaming uses native incremental llama.cpp chunks under `DECISION-23`.
 - No application components are pending for MVP. C13 and C14 are external boundaries; `ASSUMPTION-16` (committed dependency lock file) remains deferred and non-MVP.
 
 ## Closed implementation assumptions

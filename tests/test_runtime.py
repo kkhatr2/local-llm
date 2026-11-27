@@ -28,7 +28,10 @@ class _FakeLlama:
     def create_chat_completion(self, messages, stream=False, **sampling):
         self.completion_calls.append((messages, stream, dict(sampling)))
         if stream:
-            return [{"id": "chunk", "choices": [{"delta": {"content": "hi"}}]}]
+            return [
+                {"id": "chunk", "choices": [{"delta": {"content": "h"}}]},
+                {"id": "chunk", "choices": [{"delta": {"content": "i"}}]},
+            ]
         return {"id": "resp", "choices": [{"message": {"content": "hi"}}]}
 
     def close(self):
@@ -131,6 +134,32 @@ class LlamaRuntimeAdapterTests(unittest.TestCase):
         messages, stream, sampling = instance.completion_calls[0]
         self.assertEqual(messages, MESSAGES)
         self.assertFalse(stream)
+        self.assertEqual(sampling["temperature"], 0.5)
+        self.assertEqual(sampling["top_p"], 0.7)
+        self.assertEqual(sampling["top_k"], 20)
+        self.assertEqual(sampling["min_p"], 0.3)
+
+    def test_chat_stream_yields_chunks_with_merged_sampling(self):
+        record = {}
+        adapter = LlamaRuntimeAdapter(
+            _make_factory(record),
+            generation_defaults={"temperature": 0.1, "top_k": 20},
+        )
+        adapter.load("model.gguf", {"temperature": 0.5})
+
+        chunks = list(
+            adapter.chat_stream(
+                ChatRequest(messages=MESSAGES, top_p=0.7, options={"min_p": 0.3})
+            )
+        )
+
+        self.assertEqual(
+            [chunk["choices"][0]["delta"]["content"] for chunk in chunks],
+            ["h", "i"],
+        )
+        messages, stream, sampling = record["instance"].completion_calls[0]
+        self.assertEqual(messages, MESSAGES)
+        self.assertTrue(stream)
         self.assertEqual(sampling["temperature"], 0.5)
         self.assertEqual(sampling["top_p"], 0.7)
         self.assertEqual(sampling["top_k"], 20)

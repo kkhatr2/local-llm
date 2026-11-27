@@ -1,20 +1,29 @@
+import asyncio
 import json
 import tempfile
 import threading
 import time
 import unittest
+from contextlib import ExitStack
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from fastapi.responses import StreamingResponse
 from fastapi.testclient import TestClient
 
 from local_llm.cache import CacheConfig, ResponseCache
-from local_llm.chat_routes import _resolve_path
+from local_llm.chat_routes import (
+    _LifecycleStreamingResponse,
+    _abandon_stream,
+    _resolve_path,
+    _stream_response,
+)
 from local_llm.downloader import DownloaderError
 from local_llm.composition import Services, create_app
 from local_llm.config import ModelRecord, Settings
-from local_llm.locking import AliasDownloadLocks
+from local_llm.locking import AliasDownloadLocks, locked
 from local_llm.preflight import ResourceError
 from local_llm.registry import ModelState, ModelRegistry
 
@@ -73,6 +82,11 @@ class _FakeRuntime:
     def __init__(self) -> None:
         self.load_calls = []
         self.chat_calls = []
+        self.stream_calls = []
+        self.stream_lock_states: list[bool] = []
+        self.stream_events: list[str] = []
+        self.lifecycle_lock = None
+        self.fail_stream = False
         self.unload_calls = 0
         self.fail_chat = False
         self.content_override = None
@@ -168,7 +182,62 @@ class _FakeRuntime:
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
 
+    def chat_stream(self, request):
+        self.stream_calls.append(deepcopy(request))
+
+        def generate():
+            try:
+                initial = [
+                    {
+                        "id": "chatcmpl-test",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "alias-a",
+                        "choices": [
+                            {"index": 0, "delta": {"role": "assistant"}}
+                        ],
+                    },
+                    {
+                        "id": "chatcmpl-test",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "alias-a",
+                        "choices": [{"index": 0, "delta": {"content": "hel"}}],
+                    },
+                ]
+                for chunk in initial:
+                    self.stream_lock_states.append(self.lifecycle_lock.held)
+                    yield chunk
+                if self.fail_stream:
+                    raise RuntimeError("stream exploded /private/path")
+                final = [
+                    {
+                        "id": "chatcmpl-test",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "alias-a",
+                        "choices": [{"index": 0, "delta": {"content": "lo"}}],
+                    },
+                    {
+                        "id": "chatcmpl-test",
+                        "object": "chat.completion.chunk",
+                        "created": 1,
+                        "model": "alias-a",
+                        "choices": [
+                            {"index": 0, "delta": {}, "finish_reason": "stop"}
+                        ],
+                    },
+                ]
+                for chunk in final:
+                    self.stream_lock_states.append(self.lifecycle_lock.held)
+                    yield chunk
+            finally:
+                self.stream_events.append("chunks_closed")
+
+        return generate()
+
     def unload(self) -> None:
+        self.stream_events.append("unload")
         self.cancel_idle_unload()
         self.unload_calls += 1
         old = self._instance
@@ -180,6 +249,22 @@ class _FakeRuntime:
         if old is not None:
             old.closed = True
             self.unloaded_instances.append(old)
+
+
+class _CloseTrackingChunks:
+    def __init__(self, runtime, request) -> None:
+        self.runtime = runtime
+        self._chunks = runtime.chat_stream(request)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._chunks)
+
+    def close(self) -> None:
+        self.runtime.stream_events.append("chunks_closed")
+        self._chunks.close()
 
 
 class _FakeLock:
@@ -241,6 +326,7 @@ class ChatRoutesTests(unittest.TestCase):
         self.downloader = _FakeDownloader(self.lock)
         self.preflight = _FakePreflight()
         self.runtime = _FakeRuntime()
+        self.runtime.lifecycle_lock = self.lock
         self.cache = ResponseCache(
             CacheConfig(dir=".cache/responses"), root=self.root
         )
@@ -478,12 +564,178 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("text/event-stream", response.headers["content-type"])
         self.assertIn("chat.completion.chunk", response.text)
-        self.assertIn('"content":"hello"', response.text)
+        self.assertIn('"content":"hel"', response.text)
+        self.assertIn('"content":"lo"', response.text)
+        self.assertLess(response.text.index('"content":"hel"'), response.text.index('"content":"lo"'))
         self.assertTrue(response.text.endswith("data: [DONE]\n\n"))
+        self.assertEqual(self.runtime.chat_calls, [])
+        self.assertEqual(len(self.runtime.stream_calls), 1)
+        self.assertTrue(self.runtime.stream_calls[0]["stream"])
+        self.assertEqual(self.runtime.stream_lock_states, [True, True, True, True])
+        self.assertFalse(self.lock.held)
         self.assertEqual(self.runtime.unload_calls, 0)
         self.assertTrue(self.runtime.is_loaded())
         self.assertEqual(self.runtime.schedule_idle_unload_calls, 1)
         self.assertIsNotNone(self.runtime.idle_deadline)
+
+    def test_streaming_response_caches_assembled_response_for_non_stream_hit(
+        self,
+    ) -> None:
+        streamed = self.client.post(
+            self._url(), json={**self.body, "stream": True}
+        )
+        self.assertEqual(streamed.status_code, 200)
+
+        cache_files = self._cache_files()
+        self.assertEqual(len(cache_files), 1)
+        cached = json.loads(cache_files[0].read_text(encoding="utf-8"))
+        response = cached["response"]
+        self.assertEqual(response["object"], "chat.completion")
+        self.assertEqual(
+            response["choices"][0]["message"],
+            {"role": "assistant", "content": "hello"},
+        )
+        self.assertEqual(response["choices"][0]["finish_reason"], "stop")
+
+        repeated = self.client.post(self._url(), json=self.body)
+
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(
+            repeated.json()["choices"][0]["message"]["content"], "hello"
+        )
+        self.assertEqual(len(self.runtime.stream_calls), 1)
+        self.assertEqual(self.runtime.chat_calls, [])
+        self.assertEqual(len(self.runtime.load_calls), 1)
+
+    def test_streaming_error_is_sanitized_and_does_not_cache_partial(self) -> None:
+        self.runtime.fail_stream = True
+
+        response = self.client.post(
+            self._url(), json={**self.body, "stream": True}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('"code":"runtime_error"', response.text)
+        self.assertIn("Model runtime failed.", response.text)
+        self.assertNotIn("stream exploded", response.text)
+        self.assertNotIn("/private/path", response.text)
+        self.assertNotIn("[DONE]", response.text)
+        self.assertEqual(self._cache_files(), [])
+        self.assertEqual(self.runtime.unload_calls, 1)
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 0)
+        self.assertEqual(self.runtime.stream_events, ["chunks_closed", "unload"])
+        self.assertEqual(
+            self.registry.get("alias-a").state, ModelState.UNLOADED
+        )
+        self.assertFalse(self.lock.held)
+
+    def test_streaming_cache_write_error_unloads_without_done(self) -> None:
+        self.services.cache = _FailingCache(
+            CacheConfig(dir=".cache/responses"), root=self.root
+        )
+
+        response = self.client.post(
+            self._url(), json={**self.body, "stream": True}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('"code":"runtime_error"', response.text)
+        self.assertNotIn("cache write failed", response.text)
+        self.assertNotIn("[DONE]", response.text)
+        self.assertEqual(self.runtime.unload_calls, 1)
+        self.assertEqual(self.runtime.schedule_idle_unload_calls, 0)
+        self.assertFalse(self.lock.held)
+
+    def test_streaming_preflight_failure_returns_503_before_headers(self) -> None:
+        self.preflight.fail_load = True
+
+        response = self.client.post(
+            self._url(), json={**self.body, "stream": True}
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json()["error"]["code"], "resource_unavailable"
+        )
+        self.assertEqual(self.runtime.stream_calls, [])
+        self.assertFalse(self.lock.held)
+
+    def test_streaming_lock_contention_returns_503_before_headers(self) -> None:
+        path = self.root / "models/alias-a/model-a.gguf"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake-gguf")
+        self.registry.mark_downloaded("alias-a", path)
+        self.lock.available = False
+
+        response = self.client.post(
+            self._url(), json={**self.body, "stream": True}
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(
+            response.json()["error"]["code"], "resource_unavailable"
+        )
+        self.assertEqual(self.runtime.stream_calls, [])
+
+    def test_streaming_early_close_releases_lock_without_cache(self) -> None:
+        lock_stack = ExitStack()
+        lock_stack.enter_context(locked(self.lock, 1))
+        chunks = self.runtime.chat_stream({**self.body, "stream": True})
+        stream = _stream_response(
+            self.services,
+            key="0" * 64,
+            alias="alias-a",
+            revision="main",
+            chunks=chunks,
+            lock_stack=lock_stack,
+            state={"started": False},
+        )
+
+        next(stream)
+        stream.close()
+
+        self.assertFalse(self.lock.held)
+        self.assertEqual(self.runtime.unload_calls, 1)
+        self.assertEqual(self.runtime.stream_events, ["chunks_closed", "unload"])
+        self.assertEqual(self._cache_files(), [])
+
+    def test_streaming_response_releases_lock_if_body_never_starts(self) -> None:
+        lock_stack = ExitStack()
+        lock_stack.enter_context(locked(self.lock, 1))
+        chunks = _CloseTrackingChunks(
+            self.runtime, {**self.body, "stream": True}
+        )
+        state = {"started": False}
+        response = _LifecycleStreamingResponse(
+            _stream_response(
+                self.services,
+                key="0" * 64,
+                alias="alias-a",
+                revision="main",
+                chunks=chunks,
+                lock_stack=lock_stack,
+                state=state,
+            ),
+            media_type="text/event-stream",
+            lock_stack=lock_stack,
+            state=state,
+            on_never_started=lambda: _abandon_stream(
+                self.services, "alias-a", chunks
+            ),
+        )
+
+        async def disconnected(self, scope, receive, send):
+            raise RuntimeError("client disconnected")
+
+        with patch.object(StreamingResponse, "__call__", disconnected):
+            with self.assertRaisesRegex(RuntimeError, "client disconnected"):
+                asyncio.run(response({}, None, None))
+
+        self.assertFalse(state["started"])
+        self.assertFalse(self.lock.held)
+        self.assertEqual(self.runtime.unload_calls, 1)
+        self.assertEqual(self.runtime.stream_events, ["chunks_closed", "unload"])
+        self.assertEqual(self._cache_files(), [])
 
     def test_non_stream_cache_hit_streams_without_loading(self) -> None:
         self.client.post(self._url(), json=self.body)
@@ -500,6 +752,7 @@ class ChatRoutesTests(unittest.TestCase):
         self.assertTrue(response.text.endswith("data: [DONE]\n\n"))
         self.assertEqual(self.runtime.load_calls, [])
         self.assertEqual(self.runtime.chat_calls, [])
+        self.assertEqual(self.runtime.stream_calls, [])
         self.assertEqual(self.runtime.unload_calls, 0)
         self.assertEqual(self.runtime.refresh_idle_unload_calls, 1)
         self.assertEqual(self.runtime.schedule_idle_unload_calls, 0)

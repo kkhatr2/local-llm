@@ -38,7 +38,7 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 95 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests and has been verified with this command. It includes a test that captures the model output for `what is your name, respond using minimal tokens?`.
+The full suite contains 135 cache, config, registry, downloader, resource-preflight, runtime, streaming-assembly, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests and has been verified with this command. It includes incremental-streaming, stream-error/cancellation, cache-assembly, and lock-release coverage, plus a test that captures the model output for `what is your name, respond using minimal tokens?`.
 
 `docker-compose.yml` injects `HF_TOKEN` from the untracked `private.txt` into the `api`, `tests`, and `dev` services. Compose fails fast if the file is missing. `hf` and `huggingface_hub` read this variable automatically, so no token is passed on the command line or written to application code.
 
@@ -125,6 +125,8 @@ Downloaded GGUF files are stored in `models/<alias>/` and are ignored by Git.
 
 Completed chat responses are cached under `.cache/responses/`. Cache entries are keyed by the full normalized request, including messages, sampling settings, model revision, weight fingerprint, and runtime `options`. The `stream` field is excluded so streaming and non-streaming requests can share cache entries.
 
+For a streaming cache miss, native llama.cpp chunks are forwarded as SSE as they arrive and assembled into one completed response for caching after success. Cache hits still replay the stored response. The lifecycle lock remains held throughout live generation; errors or early close release it, unload immediately, and never cache partial content. Errors after SSE starts are sanitized error events without `[DONE]`; pre-response errors retain normal HTTP status envelopes.
+
 Cache settings are in `local_llm.yaml`:
 
 ```yaml
@@ -153,7 +155,7 @@ Security boundaries for this plan:
 - Use `docker compose --profile serve config --no-interpolate` when sharing configuration; plain `docker compose config` resolves and prints `HF_TOKEN`.
 - Auth/rate limiting, non-root container, cache encryption, content-hash fingerprints, and concurrent generation are deferred product decisions under `ASSUMPTION-17`.
 
-See `docs/requirements.md` for `AC-49` through `AC-60`, `docs/architecture.md` for the component/security boundary mapping, and `docs/security-report.md` for the living mitigation report. That report remains a draft while `ASSUMPTION-17` is open.
+See `docs/requirements.md` for `AC-49` through `AC-72`, `docs/architecture.md` for the component/security boundary mapping, and `docs/security-report.md` for the living mitigation report. That report remains a draft while `ASSUMPTION-17` is open.
 
 ## OpenCode configuration
 
@@ -186,7 +188,8 @@ After editing OpenCode configuration, use `/reload` if the change is not picked 
 
 ## Verification evidence
 
-- The final `docker compose run --rm tests` run passed all 110 cache, config, registry, downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests inside the Miniconda container (`Ran 110 tests ... OK`), including the new idle-retention cases. Idle retention (`DECISION-21`, `AC-57`–`AC-60`) is verified.
+- The final `docker compose run --rm tests` run passed all 135 cache, config, registry, downloader, resource-preflight, runtime, streaming-assembly, error-mapping, chat-route, admin-route, composition, alias-download-lock, OpenCode-config, and container-environment tests inside the Miniconda container (`Ran 135 tests ... OK`), including idle-retention and true incremental-streaming cases. Idle retention (`DECISION-21`, `AC-57`–`AC-60`), download hardening (`DECISION-22`, `AC-62`–`AC-66`), and streaming (`DECISION-23`, `AC-67`–`AC-72`) are verified.
 - `docker compose --profile serve config --no-interpolate` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, the host publish is loopback-only (`127.0.0.1:8000`), `env_file` is present for `api`, `tests`, and `dev`, and the config mount is read-only. Use `--no-interpolate` when sharing config output because plain `docker compose config` resolves and prints `HF_TOKEN`. `git check-ignore -v private.txt models/ .cache/responses/` confirms all three paths are ignored.
 - OpenCode end-to-end smoke (`AC-61`): **passed** with a fresh standalone session (`ses_local-llm-idle-e2e-20261127-1600`) using `local-qwen-coder-05b/chat`. `hi` returned `Hello! How can I assist you today?`; follow-up `what is your name?` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.`; follow-up `repeat your answer in one short sentence.` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.` All three calls were served by the Docker API over loopback.
-- Real-model smoke test: **passed inside Docker with token-authenticated downloads**. The API container reported `HF_TOKEN configured: True`, and `hf` downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` without the unauthenticated-request warning. From the host loopback, `GET /health` and `GET /v1/models` returned `200`; `POST /v1/models/qwen25-coder-05b/chat/completions` with `what is your name, respond using minimal tokens?` returned `200` with content `I am Qwen.` (usage 39/5/44). A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Downloaded weights and cache entries were removed afterward. Contract tests still use a fake Hugging Face CLI and fake Llama runtime; cached `stream: true` responses are replayed as SSE frames reconstructed from stored complete responses by design, not true incremental streaming generation.
+- Real-model streaming smoke (`AC-72`): **passed against the Docker API over host loopback** with `qwen25-coder-05b`. A cache-miss request for a short Python divide function returned 27 SSE frames with 24 separate content deltas and `[DONE]`; the equivalent non-streaming request returned the assembled completion with the same ID/created timestamp, and a repeated streaming request replayed one cached content delta plus `[DONE]`. A forced `curl` disconnect during a separate fresh stream was followed by admin unload returning `{"unloaded":false}` with exit `0`, confirming disconnect cleanup. OpenCode V2/96-token contract tests remain green.
+- Real-model smoke test: **passed inside Docker with token-authenticated downloads**. The API container reported `HF_TOKEN configured: True`, and `hf` downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` without the unauthenticated-request warning. From the host loopback, `GET /health` and `GET /v1/models` returned `200`; `POST /v1/models/qwen25-coder-05b/chat/completions` with `what is your name, respond using minimal tokens?` returned `200` with content `I am Qwen.` (usage 39/5/44). A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Downloaded weights and cache entries were removed afterward. Contract tests still use a fake Hugging Face CLI and fake Llama runtime. Streaming cache hits replay SSE frames reconstructed from stored complete responses; streaming cache misses use native incremental llama.cpp generation.
