@@ -6,9 +6,9 @@ Authoritative scope: `docs/requirements.md`. Runtime settings: `local_llm.yaml`.
 
 ## Component count
 
-There are **14 modeled components**:
+There are **15 modeled components**:
 
-- **10 application components** that live in the Python service.
+- **11 application components** that live in the Python service.
 - **4 boundary components** that are external systems or container/client configuration.
 
 | ID | Component | Kind | Status | Responsibility |
@@ -27,6 +27,7 @@ There are **14 modeled components**:
 | C12 | OpenCodeClient | Boundary | Implemented as config | Calls each alias-specific OpenAI-compatible endpoint using `limit` and `body.options`. |
 | C13 | HuggingFaceCli | Boundary | External | Performs public model downloads inside the container. |
 | C14 | LlamaCppLibrary | Boundary | External dependency | Provides `Llama(...)`, `create_chat_completion`, and streaming generation on CPU. |
+| C15 | AliasDownloadLocks | Application | Implemented | Provides per-alias download locks so slow download I/O stays outside the lifecycle lock without duplicate same-alias downloads. |
 
 ## UML component view
 
@@ -48,6 +49,7 @@ flowchart LR
             ADMIN["C8 AdminRoutes"]
             CACHE["C9 ResponseCache"]
             ERR["C10 ErrorMapper"]
+            LOCKS["C15 AliasDownloadLocks"]
         end
 
         HFCLI["C13 HuggingFaceCli"]
@@ -64,6 +66,7 @@ flowchart LR
     ROOT --> RT
     ROOT --> CACHE
     ROOT --> ERR
+    ROOT --> LOCKS
 
     CFG -->|"settings and llama_defaults"| REG
     CFG -->|"thresholds and options"| PRE
@@ -74,6 +77,7 @@ flowchart LR
     CHAT --> REG
     CHAT --> RT
     CHAT --> ERR
+    CHAT --> LOCKS
 
     ADMIN --> REG
     ADMIN --> DL
@@ -325,6 +329,7 @@ flowchart TB
 - HTTP routes depend on application contracts, not on `llama_cpp` or filesystem details.
 - I/O, clocks, randomness, subprocess calls, and retries stay at explicit edges.
 - Cache hits skip load preflight, model loading, and inference after GGUF path/fingerprint resolution; if the GGUF file is absent, download restoration and its fail-closed preflight still occur before key computation.
+- Download I/O never runs under the process-wide lifecycle lock. C15 serializes downloads per alias; C7 re-acquires the lifecycle lock only for short existence re-checks and registry mutation. C1 runs startup downloads concurrently up to `download.max_parallel_downloads` only after fail-closed preflight checks.
 - At most one model instance is resident at a time. A prompt for a different alias unloads the current instance immediately before loading the new one; load preflight is skipped when reusing the already loaded alias and still runs on a cold load and on download restoration.
 - The idle-unload timer uses the same process-wide lock as generation (`server.lock_timeout_seconds: 600`; contention remains `503`). A prompt for the loaded alias or a cache hit resets the timer; explicit admin unload and runtime/cache-put errors unload immediately and cancel it. `server.idle_unload_seconds` defaults to `180` and is validated `> 0` and `<= 86400` (24 hours).
 - OpenCode's 96-token cap (`limit.output` and `body.options.max_tokens`) is unchanged by idle retention.

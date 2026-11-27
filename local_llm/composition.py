@@ -5,8 +5,9 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -20,6 +21,7 @@ from local_llm.chat_routes import create_chat_router
 from local_llm.config import ConfigLoader
 from local_llm.downloader import DownloaderError, HfCliDownloader
 from local_llm.error_mapper import ErrorMapper, MappedError
+from local_llm.locking import AliasDownloadLocks, locked
 from local_llm.preflight import ResourceError, ResourcePreflight
 from local_llm.registry import DuplicateAliasError, ModelRegistry, UnknownAliasError
 from local_llm.runtime import LlamaRuntimeAdapter
@@ -37,6 +39,7 @@ class Services:
     preflight: Any
     runtime: Any
     lock: Any
+    download_locks: Any = field(default_factory=AliasDownloadLocks)
 
 
 def configure_logging() -> None:
@@ -145,14 +148,44 @@ def _llama_factory(model_path: Any, **options: Any) -> Any:
     return Llama(model_path=str(model_path), **options)
 
 
+def _download_one(services: Services, record: Any) -> None:
+    path = services.downloader.download(record, services.root)
+    with locked(services.lock, services.settings.server.lock_timeout_seconds):
+        services.registry.mark_downloaded(record.alias, path)
+
+
 def _download_configured_models(services: Services) -> None:
+    missing = []
     for record in services.settings.models:
         if not record.enabled:
             continue
-        if not services.downloader.exists(record, services.root):
-            services.preflight.check_download(services.root)
-        path = services.downloader.download(record, services.root)
-        services.registry.mark_downloaded(record.alias, path)
+        if services.downloader.exists(record, services.root):
+            path = services.downloader.download(record, services.root)
+            with locked(services.lock, services.settings.server.lock_timeout_seconds):
+                services.registry.mark_downloaded(record.alias, path)
+        else:
+            missing.append(record)
+
+    if not missing:
+        return
+
+    for record in missing:
+        services.preflight.check_download(services.root)
+
+    workers = min(
+        services.settings.download.max_parallel_downloads, len(missing)
+    )
+    if workers == 1:
+        for record in missing:
+            _download_one(services, record)
+        return
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_download_one, services, record) for record in missing
+        ]
+    for future in futures:
+        future.result()
 
 
 def _make_lifespan(services: Services) -> Any:
@@ -203,6 +236,7 @@ def build_app(
             lock=lifecycle_lock,
         ),
         lock=lifecycle_lock,
+        download_locks=AliasDownloadLocks(),
     )
 
     app = create_app(

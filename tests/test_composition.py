@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -158,6 +159,32 @@ models:
         self.assertEqual(len(self.runner_calls), 1)
         self.assertIn("model-b", self.runner_calls[0][2])
         self.assertEqual(len(self.preflight.download_calls), 1)
+
+    def test_startup_downloads_run_in_parallel(self) -> None:
+        barrier = threading.Barrier(2)
+        commands = []
+        commands_lock = threading.Lock()
+
+        def runner(command, timeout):
+            with commands_lock:
+                commands.append(list(command))
+            barrier.wait(timeout=10)
+            filename = command[3]
+            local_dir = Path(command[command.index("--local-dir") + 1])
+            local_dir.mkdir(parents=True, exist_ok=True)
+            (local_dir / filename).write_bytes(b"fake-gguf")
+            return 0
+
+        app = self._build(runner=runner)
+        with TestClient(app) as client:
+            response = client.get("/v1/models")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(
+            {command[2] for command in commands},
+            {"owner/model-a", "owner/model-b"},
+        )
 
     def test_startup_preflight_failure_fails_closed(self) -> None:
         self.preflight.fail_download = True

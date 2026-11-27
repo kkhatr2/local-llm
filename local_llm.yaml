@@ -43,6 +43,8 @@ download:
   command: hf
   timeout_seconds: 1800
   public_only: true
+  # Startup downloads use this many workers; valid values are > 0 and <= 16.
+  max_parallel_downloads: 4
 
 resources:
   min_free_disk_gb: 10

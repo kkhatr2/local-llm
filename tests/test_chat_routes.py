@@ -1,6 +1,7 @@
 import json
 import tempfile
 import threading
+import time
 import unittest
 from copy import deepcopy
 from pathlib import Path
@@ -9,15 +10,19 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from local_llm.cache import CacheConfig, ResponseCache
+from local_llm.chat_routes import _resolve_path
 from local_llm.composition import Services, create_app
 from local_llm.config import ModelRecord, Settings
+from local_llm.locking import AliasDownloadLocks
 from local_llm.preflight import ResourceError
 from local_llm.registry import ModelState, ModelRegistry
 
 
 class _FakeDownloader:
-    def __init__(self) -> None:
+    def __init__(self, lock=None) -> None:
         self.calls = []
+        self.lock = lock
+        self.lock_held_during_download: list[bool] = []
 
     def exists(self, record, root) -> bool:
         path = Path(root) / "models" / record.alias / record.filename
@@ -25,6 +30,9 @@ class _FakeDownloader:
 
     def download(self, record, root) -> Path:
         self.calls.append(record.alias)
+        if self.lock is not None:
+            self.lock_held_during_download.append(self.lock.held)
+        time.sleep(0.02)
         path = Path(root) / "models" / record.alias / record.filename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"fake-gguf")
@@ -173,6 +181,7 @@ class _FakeRuntime:
 class _FakeLock:
     def __init__(self) -> None:
         self.available = True
+        self.held = False
         self.acquire_calls = 0
         self.release_calls = 0
         self.timeouts: list[float] = []
@@ -180,10 +189,14 @@ class _FakeLock:
     def acquire(self, timeout=None) -> bool:
         self.acquire_calls += 1
         self.timeouts.append(timeout)
-        return self.available
+        if not self.available:
+            return False
+        self.held = True
+        return True
 
     def release(self) -> None:
         self.release_calls += 1
+        self.held = False
 
 
 class _FailingCache(ResponseCache):
@@ -220,10 +233,10 @@ class ChatRoutesTests(unittest.TestCase):
             }
         )
         self.registry = ModelRegistry(self.settings.models)
-        self.downloader = _FakeDownloader()
+        self.lock = _FakeLock()
+        self.downloader = _FakeDownloader(self.lock)
         self.preflight = _FakePreflight()
         self.runtime = _FakeRuntime()
-        self.lock = _FakeLock()
         self.cache = ResponseCache(
             CacheConfig(dir=".cache/responses"), root=self.root
         )
@@ -533,6 +546,48 @@ class ChatRoutesTests(unittest.TestCase):
                 "type": "RequestValidationError",
             },
         )
+
+    def test_download_runs_without_holding_lifecycle_lock(self) -> None:
+        response = self.client.post(self._url(), json=self.body)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.downloader.calls, ["alias-a"])
+        self.assertEqual(self.downloader.lock_held_during_download, [False])
+
+    def test_concurrent_same_alias_resolution_downloads_once(self) -> None:
+        services = Services(
+            settings=self.settings,
+            root=self.root,
+            registry=self.registry,
+            cache=self.cache,
+            downloader=self.downloader,
+            preflight=self.preflight,
+            runtime=self.runtime,
+            lock=threading.Lock(),
+            download_locks=AliasDownloadLocks(),
+        )
+        start = threading.Barrier(2)
+        paths = []
+        errors = []
+
+        def resolve() -> None:
+            try:
+                start.wait(timeout=5)
+                paths.append(_resolve_path(services, "alias-a"))
+            except BaseException as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=resolve) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(paths), 2)
+        self.assertEqual(paths[0], paths[1])
+        self.assertEqual(self.downloader.calls, ["alias-a"])
+        self.assertTrue((self.root / "models/alias-a/model-a.gguf").is_file())
 
     def test_lock_contention_returns_stable_503(self) -> None:
         self.lock.available = False

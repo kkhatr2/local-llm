@@ -95,6 +95,7 @@ class DownloadSettings(BaseModel):
     command: str = "hf"
     timeout_seconds: int = Field(default=1800, gt=0)
     public_only: bool = True
+    max_parallel_downloads: int = Field(default=4, gt=0, le=16)
 
 
 class ResourceSettings(BaseModel):

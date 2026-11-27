@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 
 from local_llm.config import ConfigLoader, Settings
 
@@ -128,6 +128,24 @@ class ConfigLoaderTests(unittest.TestCase):
         settings = ConfigLoader(env={}, reader=lambda _: good).load()
 
         self.assertEqual(settings.server.idle_unload_seconds, 86400)
+
+    def test_download_max_parallel_downloads_defaults_to_4(self) -> None:
+        settings = ConfigLoader(env={}, reader=lambda _: VALID_YAML).load()
+
+        self.assertEqual(settings.download.max_parallel_downloads, 4)
+
+    def test_download_max_parallel_downloads_rejects_out_of_bounds(self) -> None:
+        for bad_value in (0, 17):
+            bad = VALID_YAML.replace(
+                "llama_defaults:\n",
+                f"download:\n  max_parallel_downloads: {bad_value}\nllama_defaults:\n",
+                1,
+            )
+
+            with self.assertRaises(ValueError) as context:
+                ConfigLoader(env={}, reader=lambda _: bad).load()
+
+            self.assertIn("max_parallel_downloads", str(context.exception))
 
     def test_missing_required_field_names_field(self) -> None:
         bad = VALID_YAML.replace("    repo_id: owner/name\n", "", 1)

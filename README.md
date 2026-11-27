@@ -148,6 +148,7 @@ Security boundaries for this plan:
 
 - `127.0.0.1:8000` is the only host publish. Every local host process is trusted; do not publish the API on `0.0.0.0` or a LAN address.
 - Admin `POST /admin/models` is a synchronous public-model download. Prefer startup-configured aliases, keep the configured timeout, and rely on disk/RAM preflight; async jobs and approved-alias gating are deferred.
+- Startup downloads are bounded by `download.max_parallel_downloads` (default `4`; valid `> 0` and `<= 16`) and run only after fail-closed preflight checks. On-demand GGUF restoration runs under a per-alias download lock, never under the process-wide lifecycle lock.
 - `DELETE /admin/models/{alias}` unregisters only. Call the unload endpoint first if an in-memory instance must be released.
 - Use `docker compose --profile serve config --no-interpolate` when sharing configuration; plain `docker compose config` resolves and prints `HF_TOKEN`.
 - Auth/rate limiting, non-root container, cache encryption, content-hash fingerprints, and concurrent generation are deferred product decisions under `ASSUMPTION-17`.

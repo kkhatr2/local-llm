@@ -40,20 +40,36 @@ class ChatCompletionRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
-def _resolve_path(services: Any, alias: str) -> Any:
-    """Download a missing GGUF under the process lock, re-checking first."""
+def _has_path(services: Any, entry: Any) -> bool:
+    return entry.path is not None and services.downloader.exists(
+        entry.record, services.root
+    )
 
-    with locked(services.lock, services.settings.server.lock_timeout_seconds):
+
+def _resolve_path(services: Any, alias: str) -> Any:
+    """Download a missing GGUF without holding the lifecycle lock."""
+
+    timeout = services.settings.server.lock_timeout_seconds
+    with locked(services.lock, timeout):
         entry = services.registry.get(alias)
-        path = entry.path
-        if path is not None and services.downloader.exists(
-            entry.record, services.root
-        ):
-            return path
-        services.preflight.check_download(services.root)
+        if _has_path(services, entry):
+            return entry.path
+
+    with locked(services.download_locks.lock_for(alias), timeout):
+        with locked(services.lock, timeout):
+            entry = services.registry.get(alias)
+            if _has_path(services, entry):
+                return entry.path
+            services.preflight.check_download(services.root)
+
         path = services.downloader.download(entry.record, services.root)
-        services.registry.mark_downloaded(alias, path)
-        return path
+
+        with locked(services.lock, timeout):
+            entry = services.registry.get(alias)
+            if _has_path(services, entry):
+                return entry.path
+            services.registry.mark_downloaded(alias, path)
+            return path
 
 
 def _mark_unloaded(services: Any, alias: str) -> None:

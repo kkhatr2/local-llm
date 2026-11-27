@@ -57,7 +57,7 @@ HF_TOKEN=<token>
 - Because a GGUF can stay resident for `server.idle_unload_seconds` (default 180 s; valid `> 0` and `<= 86400` s / 24 hours) after its last prompt, call `POST /admin/models/{alias}/unload` before `DELETE /admin/models/{alias}` if the instance must be released immediately; `DELETE` unregisters only.
 - Auth/rate limiting, non-root container, cache encryption, content-hash fingerprints, and concurrent generation are deferred product decisions under `ASSUMPTION-17`.
 
-Enabled models from `local_llm.yaml` are downloaded at startup by the app lifespan. A missing GGUF on a later request is restored on demand (see chat completions below).
+Enabled models from `local_llm.yaml` are downloaded at startup by the app lifespan. Fail-closed disk preflight runs before any download command. Missing GGUFs are then downloaded concurrently up to `download.max_parallel_downloads` (default `4`; valid `> 0` and `<= 16`), and registry state is marked `DOWNLOADED` as each file completes. A missing GGUF on a later request is restored on demand (see chat completions below).
 
 ## Stable error envelope
 
@@ -83,7 +83,7 @@ Application-level failures (domain exceptions, request validation, and unexpecte
 | 504 | `download_timeout` / `runtime_timeout` | Download timeout (`DownloadTimeoutError`) / generation timeout (`TimeoutError`) |
 | 500 | `internal_error` | Unmapped unexpected failure |
 
-The process-wide model lock waits `server.lock_timeout_seconds` from `local_llm.yaml` (default `600` seconds); failing to acquire it returns `503 resource_unavailable`. The idle-unload timer uses this same lock; the timeout remains `600` seconds.
+The process-wide model lock waits `server.lock_timeout_seconds` from `local_llm.yaml` (default `600` seconds); failing to acquire it returns `503 resource_unavailable`. The idle-unload timer and short registry re-checks use this same lock; the timeout remains `600` seconds. Slow GGUF download I/O is the deliberate exception: it runs under a dedicated per-alias download lock so one download cannot block chat, admin, or idle-unload operations for other aliases. Conflicting downloads of the same alias are serialized by that per-alias lock.
 
 ## Endpoint reference
 
@@ -118,7 +118,7 @@ Purpose: list registered aliases in OpenAI-compatible model-list shape.
 
 ### `POST /v1/models/{alias}/chat/completions`
 
-Purpose: OpenAI-compatible chat completion (JSON or SSE) for one registered alias. The alias is loaded lazily on first use and then kept resident for `server.idle_unload_seconds` (default 180 seconds; valid `> 0` and `<= 86400` seconds / 24 hours) after the last prompt rather than unloaded at response completion or SSE `[DONE]`.
+Purpose: OpenAI-compatible chat completion (JSON or SSE) for one registered alias. The alias is loaded lazily on first use and then kept resident for `server.idle_unload_seconds` (default 180 seconds; valid `> 0` and `<= 86400` seconds / 24 hours) after the last prompt rather than unloaded at response completion or SSE `[DONE]`. If the GGUF file is missing, it is restored under a per-alias download lock without holding the process-wide lifecycle lock during the download; the lifecycle lock is re-acquired only for the existence re-check and registry update.
 
 - Path parameter: `alias` (string; must already be registered).
 - Request body: a `ChatCompletionRequest` object.
