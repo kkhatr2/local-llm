@@ -43,7 +43,7 @@ Create this report and link it from `README.md`. Do **not** change runtime behav
 
 ### Deferred from this report
 
-Actual implementation of any mitigation, replacement of the loopback trust model, embeddings/tool-calling APIs, GPU inference, model-management UI, and committed dependency lock generation.
+Actual implementation of any mitigation, replacement of the loopback trust model, embeddings/tool-calling APIs, GPU inference, model-management UI, and multi-architecture dependency locks beyond the committed linux-64 lock.
 
 ### Rejected by existing decisions
 
@@ -59,7 +59,7 @@ Actual implementation of any mitigation, replacement of the loopback trust model
 | `ASSUMPTION-7` | Generation is serialized by one process-wide lock; idle unload uses the same lock. | Tech Lead | Closed | None. Do not weaken the lock for idle unload. |
 | `ASSUMPTION-8` | Cache is written after full response assembly; errors unload immediately. With idle retention, success schedules/reset the timer instead of unloading. | Tech Lead | Closed | None. |
 | `ASSUMPTION-12` | Cache limits are 30 days and 1024 MB. | Tech Lead | Closed | Shorter TTL/encryption deferred under `ASSUMPTION-17`. |
-| `ASSUMPTION-16` | Miniconda base image plus `environment.yaml` is sufficient until a committed lock file is generated inside Docker. | Tech Lead + Delivery Manager | Closed; lock file deferred | Revisit only as explicit scope expansion. |
+| `ASSUMPTION-16` | A committed linux-64 explicit lock generated inside Docker makes dependency builds reproducible; `environment.yaml` stays the source of truth. | Tech Lead + Delivery Manager | Closed; implemented by `DECISION-25` | Revisit only if non-x86_64 build targets are added. |
 
 **Blocking question for final approval:** Is the host a trusted, single-user environment, or can other local users/processes reach `127.0.0.1:8000`? The user has chosen to keep this open, so this report remains a living draft.
 
@@ -103,12 +103,12 @@ Actual implementation of any mitigation, replacement of the loopback trust model
 | `SEC-I-18` | Application logging does not emit `HF_TOKEN`, prompts, paths, or stack traces; normal download logs contain only alias/repository/filename metadata. | Static review of `local_llm/`, `local_llm/composition.py` logging setup, container-environment tests, and prior real-model smoke. Residual `hf` subprocess output is tracked in `SEC-G-17`. | Implemented, verified for application code |
 | `SEC-I-19` | Settings are validated and frozen after load; the configured download CLI defaults to `hf`. | `local_llm/config.py`, `local_llm.yaml`, config tests. | Implemented, verified |
 | `SEC-I-20` | Download I/O is outside the process-wide lifecycle lock; C15 serializes same-alias downloads and C1 bounds parallel startup downloads after preflight. | `local_llm/chat_routes.py`, `local_llm/locking.py`, `local_llm/composition.py`, `local_llm/config.py`; `DECISION-22`, `AC-62`–`AC-66`. | Implemented, verified |
-| `SEC-I-21` | Live streaming holds the lifecycle lock through generation, caches only complete responses, closes native chunks before unload on failure/cancellation, releases the lock in `finally`, and uses C10 sanitized bodies for post-header SSE error events. | `local_llm/chat_routes.py`, `local_llm/runtime.py`, `local_llm/streaming.py`, `local_llm/error_mapper.py`; `DECISION-23`, `AC-67`–`AC-72`; 136 Docker tests plus real-model streaming smoke. | Implemented, verified |
-| `SEC-I-22` | `HF_TOKEN` injection is optional and does not change token hygiene; `public_only` and fail-closed preflight remain enforced for unauthenticated public downloads. | `docker-compose.yml`, `tests/test_environment.py`, `local_llm/config.py`, `local_llm/downloader.py`; `DECISION-24`, `AC-73`–`AC-76`; 136 Docker tests with and without `private.txt` plus a no-token real-model smoke; container tests explicitly accept an absent token and pin that `HF_TOKEN` is injected only through the optional `env_file`. | Implemented, verified |
+| `SEC-I-21` | Live streaming holds the lifecycle lock through generation, caches only complete responses, closes native chunks before unload on failure/cancellation, releases the lock in `finally`, and uses C10 sanitized bodies for post-header SSE error events. | `local_llm/chat_routes.py`, `local_llm/runtime.py`, `local_llm/streaming.py`, `local_llm/error_mapper.py`; `DECISION-23`, `AC-67`–`AC-72`; 136-test `DECISION-23` gate plus real-model streaming smoke, superseded by the current 142-test `DECISION-25` gate. | Implemented, verified |
+| `SEC-I-22` | `HF_TOKEN` injection is optional and does not change token hygiene; `public_only` and fail-closed preflight remain enforced for unauthenticated public downloads. | `docker-compose.yml`, `tests/test_environment.py`, `local_llm/config.py`, `local_llm/downloader.py`; `DECISION-24`, `AC-73`–`AC-76`; 136-test `DECISION-24` gate with and without `private.txt` plus a no-token real-model smoke, superseded by the current 142-test gate re-run in both token states; container tests explicitly accept an absent token and pin that `HF_TOKEN` is injected only through the optional `env_file`. | Implemented, verified |
 
 ## 5. Open and needed mitigations
 
-The report distinguishes accepted controls, open recommendations, and deferred scope. The user later approved the contract-preserving `DECISION-22` download-hardening change and the optional-token change `DECISION-24`; all other recommendations remain unimplemented until explicitly scoped. `ASSUMPTION-17` remains open, so auth/rate limiting, non-root container changes, and cache encryption are still deferred.
+The report distinguishes accepted controls, open recommendations, and deferred scope. The user later approved the contract-preserving `DECISION-22` download-hardening change, the optional-token change `DECISION-24`, and the reproducible-build change `DECISION-25`; all other recommendations remain unimplemented until explicitly scoped. `ASSUMPTION-17` remains open, so auth/rate limiting, non-root container changes, and cache encryption are still deferred.
 
 | ID | Finding | Severity | Effort | Owner module | Recommendation | Current status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -186,7 +186,7 @@ Each criterion is one observable behavior. `SEC-*` criteria define what must be 
 ## 9. Verification evidence for this report
 
 - Report baseline: commit `524844a Add 180-second idle retention for loaded models`.
-- Docker test gate: the original report run passed 110 tests; the current `DECISION-24` gate passes all 136 tests (`Ran 136 tests ... OK`) with and without `private.txt`, including idle-retention, download hardening, native streaming, optional-token and Compose-boundary checks, sanitized stream errors, cancellation/lock cleanup, validation, cache-integrity, error-envelope, and container-environment tests.
+- Docker test gate: the original report run passed 110 tests; the `DECISION-24` gate passed all 136 tests (`Ran 136 tests ... OK`) with and without `private.txt`; the current `DECISION-25` gate passes all 142 tests (`Ran 142 tests ... OK`) after a clean no-cache amd64 build, including idle-retention, download hardening, native streaming, optional-token and Compose-boundary checks, dependency-lock and platform checks, sanitized stream errors, cancellation/lock cleanup, validation, cache-integrity, error-envelope, and container-environment tests.
 - Compose gate: re-run for this report; `docker compose --profile serve config --no-interpolate` passed without printing `HF_TOKEN`. Re-check at every deployment prep and confirm the published host address remains `127.0.0.1:8000`.
 - Ignore gate: re-run for this report; `git check-ignore -v private.txt models/ .cache/responses/` reported all paths ignored through `.gitignore`. Re-check before every commit.
 - This report is documentation-only; no runtime behavior was changed by adding it. The security assessment was read-only, so a future mitigation must run its own acceptance tests before changing this status table.

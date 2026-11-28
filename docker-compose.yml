@@ -1,6 +1,7 @@
 services:
   api:
     build: .
+    platform: linux/amd64
     profiles: ["serve"]
     command: >-
       uvicorn local_llm.api:app
@@ -25,6 +26,7 @@ services:
 
   tests:
     build: .
+    platform: linux/amd64
     working_dir: /app
     init: true
     command: python -m unittest discover -s tests -v
@@ -37,12 +39,16 @@ services:
     volumes:
       - ./local_llm.yaml:/app/local_llm.yaml:ro
       - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./Dockerfile:/app/Dockerfile:ro
+      - ./environment.yaml:/app/environment.yaml:ro
+      - ./environment-linux-64.lock:/app/environment-linux-64.lock:ro
       - ./opencode.jsonc:/app/opencode.jsonc:ro
       - ./local_llm:/app/local_llm
       - ./tests:/app/tests
 
   dev:
     build: .
+    platform: linux/amd64
     working_dir: /app
     init: true
     stdin_open: true
