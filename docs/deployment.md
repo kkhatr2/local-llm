@@ -110,9 +110,11 @@ verify the committed files and digest parity.
 
 Verification performed for this change: `docker compose run --rm tests` passed
 174 tests; `docker compose --profile serve config --no-interpolate` succeeded;
-`helm lint helm/local-llm`, `helm template`, and client-only
-`helm install --dry-run=client --disable-openapi-validation` rendered 11
-resources from the chart; and `terraform init -backend=false`,
+`docker build -f Dockerfile.cuda -t local-llm-api-cuda:build .` succeeded from
+the digest-pinned base and committed lock, and importing `llama_cpp` in that
+image printed `0.3.37`; `helm lint helm/local-llm`, `helm template`, and
+client-only `helm install --dry-run=client --disable-openapi-validation`
+rendered 11 resources from the chart; and `terraform init -backend=false`,
 `terraform validate`, and `terraform fmt -check` succeeded in Docker using
 Terraform 1.9.8 with the pinned AWS provider 5.61.0. The Helm client-only dry
 run used a local fake discovery endpoint and disabled OpenAPI schema validation
