@@ -1,0 +1,166 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "local-llm.fullname" . }}
+  labels:
+    {{- include "local-llm.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "local-llm.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ .Files.Get "files/local_llm.yaml" | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "local-llm.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ default (include "local-llm.fullname" .) .Values.serviceAccount.name }}
+      securityContext:
+        runAsNonRoot: {{ .Values.security.runAsNonRoot }}
+        runAsUser: {{ .Values.security.runAsUser }}
+        runAsGroup: {{ .Values.security.runAsGroup }}
+        fsGroup: {{ .Values.security.fsGroup }}
+        seccompProfile:
+          type: {{ .Values.security.seccompProfile }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.modelSupply.syncEnabled }}
+      initContainers:
+        - name: object-storage-sync
+          image: {{ include "local-llm.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "local_llm.sync.object_storage_cli"]
+          env:
+            - name: LOCAL_LLM_CONFIG
+              value: /etc/local-llm/local_llm.yaml
+            - name: PYTHONPATH
+              value: /app
+            - name: LOCAL_LLM_OBJECT_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.modelSupply.credentialsSecretRef }}
+                  key: access_key_id
+            - name: LOCAL_LLM_OBJECT_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.modelSupply.credentialsSecretRef }}
+                  key: secret_access_key
+            - name: LOCAL_LLM_OBJECT_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.modelSupply.credentialsSecretRef }}
+                  key: session_token
+                  optional: true
+          securityContext:
+            runAsNonRoot: {{ .Values.security.runAsNonRoot }}
+            runAsUser: {{ .Values.security.runAsUser }}
+            runAsGroup: {{ .Values.security.runAsGroup }}
+            allowPrivilegeEscalation: {{ .Values.security.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: {{ .Values.security.seccompProfile }}
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+            - name: cache
+              mountPath: /app/.cache/responses
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /etc/local-llm/local_llm.yaml
+              subPath: local_llm.yaml
+              readOnly: true
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "local-llm.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "local_llm.api:app"]
+          args: ["--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: LOCAL_LLM_CONFIG
+              value: /etc/local-llm/local_llm.yaml
+            - name: PYTHONPATH
+              value: /app
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: local-llm-hf
+                  key: token
+                  optional: true
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          securityContext:
+            runAsNonRoot: {{ .Values.security.runAsNonRoot }}
+            runAsUser: {{ .Values.security.runAsUser }}
+            runAsGroup: {{ .Values.security.runAsGroup }}
+            allowPrivilegeEscalation: {{ .Values.security.allowPrivilegeEscalation }}
+            readOnlyRootFilesystem: {{ .Values.security.readOnlyRootFilesystem }}
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: {{ .Values.security.seccompProfile }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: models
+              mountPath: /app/models
+            - name: cache
+              mountPath: /app/.cache/responses
+            - name: tmp
+              mountPath: /tmp
+            - name: config
+              mountPath: /etc/local-llm/local_llm.yaml
+              subPath: local_llm.yaml
+              readOnly: true
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-models" (include "local-llm.fullname" .)) .Values.persistence.models.existingClaim }}
+        - name: cache
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-cache" (include "local-llm.fullname" .)) .Values.persistence.cache.existingClaim }}
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "local-llm.fullname" . }}-config
+            items:
+              - key: local_llm.yaml
+                path: local_llm.yaml

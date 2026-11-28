@@ -9,6 +9,8 @@ server:
   # Valid values are > 0 and <= 86400 (24 hours); default 180 seconds.
   # A prompt for the loaded alias resets the timer; explicit admin unload wins.
   idle_unload_seconds: 180
+  # Reject oversized request bodies with 422 before any lock is acquired.
+  max_request_body_bytes: 1048576
 
 paths:
   model_dir: models
@@ -34,6 +36,8 @@ max_n_ctx: 32768
 
 cache:
   enabled: true
+  # Phase 2: cache entries are local to one pod/instance; never shared.
+  scope: per_instance
   dir: .cache/responses
   ttl_days: 30
   max_size_mb: 1024
@@ -52,6 +56,51 @@ resources:
   max_estimated_model_memory_gb: 6
   reserve_system_memory_gb: 4
   fail_closed: true
+  # CUDA selection fails closed until an explicit VRAM limit is configured.
+  cuda_vram_limit_gb: 0
+
+deployment:
+  primary_target: kubernetes
+  local_mode: true
+  terraform_reference: aws
+  ingress:
+    enabled: false
+    gateway_policy: api_key
+    api_key_secret_ref: local-llm-api-key
+    publish: loopback
+
+compute:
+  default_backend: cpu
+  active_backends: [cpu, cuda]
+  documented_backends: [metal]
+  device_placement: auto
+  fallback: fail_closed
+  backend_defaults:
+    cpu:
+      n_gpu_layers: 0
+    cuda:
+      n_gpu_layers: 33
+    metal:
+      n_gpu_layers: 1  # documentation-only; no Metal image or verification
+
+registry:
+  supply: hf
+  object_storage:
+    provider: s3
+    bucket: local-llm-models
+    prefix: gguf/
+    region: us-east-1
+    secret_ref: model-supply-credentials
+    endpoint: ""
+  sync:
+    enabled: false
+    immutable_weights: true
+    concurrency: 4
+
+security:
+  non_root: true
+  read_only_root: true
+  secrets_backend: kubernetes_secret
 
 models:
   - alias: phi4-mini

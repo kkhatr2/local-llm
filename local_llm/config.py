@@ -45,6 +45,32 @@ class ServerSettings(BaseModel):
     port: int = Field(default=8000, ge=1, le=65535)
     lock_timeout_seconds: int = Field(default=600, gt=0)
     idle_unload_seconds: int = Field(default=180, gt=0, le=86400)
+    # Server-side request body ceiling; oversized bodies are rejected with 422
+    # before any lock is taken or model path is resolved.
+    max_request_body_bytes: int = Field(default=1048576, gt=0)
+
+
+def _validate_relative_path(
+    value: str, field_name: str, *, basename_only: bool
+) -> str:
+    """Reject absolute, parent-traversing, or non-normalized configured paths."""
+
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{field_name} must be a non-empty relative path")
+    if "\x00" in value:
+        raise ValueError(f"{field_name} must not contain null bytes")
+    if "\\" in value:
+        raise ValueError(f"{field_name} must use forward slashes only")
+    if value.startswith("/") or re.match(r"^[A-Za-z]:", value):
+        raise ValueError(f"{field_name} must be a relative path")
+    parts = value.split("/")
+    if any(part == "" for part in parts):
+        raise ValueError(f"{field_name} must be a normalized relative path")
+    if any(part == ".." for part in parts):
+        raise ValueError(f"{field_name} must not contain '..'")
+    if basename_only and len(parts) != 1:
+        raise ValueError(f"{field_name} must be a single directory name")
+    return value
 
 
 class PathSettings(BaseModel):
@@ -52,6 +78,22 @@ class PathSettings(BaseModel):
 
     model_dir: str = "models"
     cache_dir: str = ".cache/responses"
+
+    @field_validator("model_dir")
+    @classmethod
+    def _model_dir_valid(cls, value: str) -> str:
+        return _validate_relative_path(
+            value, "paths.model_dir", basename_only=True
+        )
+
+    @field_validator("cache_dir")
+    @classmethod
+    def _cache_dir_valid(cls, value: str) -> str:
+        # The committed MVP value is `.cache/responses`, so nested relative
+        # directories remain valid; traversal and absolute paths do not.
+        return _validate_relative_path(
+            value, "paths.cache_dir", basename_only=False
+        )
 
 
 class LlamaDefaults(BaseModel):
@@ -106,6 +148,181 @@ class ResourceSettings(BaseModel):
     max_estimated_model_memory_gb: float = Field(default=6.0, gt=0)
     reserve_system_memory_gb: float = Field(default=4.0, ge=0)
     fail_closed: bool = True
+    # Conservative default: 0 means "not configured". CPU placement is
+    # unaffected, but selecting CUDA with 0 fails closed (503) instead of
+    # silently falling back to CPU.
+    cuda_vram_limit_gb: float = Field(default=0.0, ge=0)
+
+
+class IngressSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = False
+    gateway_policy: str = "api_key"
+    api_key_secret_ref: str = "local-llm-api-key"
+    publish: str = "loopback"
+
+    @model_validator(mode="after")
+    def _validate_ingress(self) -> "IngressSettings":
+        if self.gateway_policy != "api_key":
+            raise ValueError(
+                "deployment.ingress.gateway_policy must be 'api_key'"
+            )
+        if self.publish not in ("loopback", "public"):
+            raise ValueError(
+                "deployment.ingress.publish must be 'loopback' or 'public'"
+            )
+        if self.enabled and not self.api_key_secret_ref:
+            raise ValueError(
+                "deployment.ingress.api_key_secret_ref must be non-empty when "
+                "deployment.ingress.enabled is true"
+            )
+        return self
+
+
+class DeploymentSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    primary_target: str = "compose"
+    local_mode: bool = True
+    terraform_reference: str = "aws"
+    ingress: IngressSettings = Field(default_factory=IngressSettings)
+
+    @model_validator(mode="after")
+    def _validate_deployment(self) -> "DeploymentSettings":
+        if self.primary_target not in ("kubernetes", "compose"):
+            raise ValueError(
+                "deployment.primary_target must be 'kubernetes' or 'compose'"
+            )
+        if not self.terraform_reference:
+            raise ValueError("deployment.terraform_reference must be non-empty")
+        return self
+
+
+class BackendDefaults(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    cpu: dict[str, Any] = Field(
+        default_factory=lambda: {"n_gpu_layers": 0}
+    )
+    cuda: dict[str, Any] = Field(
+        default_factory=lambda: {"n_gpu_layers": 33}
+    )
+    metal: dict[str, Any] = Field(
+        default_factory=lambda: {"n_gpu_layers": 1}
+    )
+
+
+class ComputeSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    default_backend: str = "cpu"
+    active_backends: tuple[str, ...] = ("cpu", "cuda")
+    documented_backends: tuple[str, ...] = ("metal",)
+    device_placement: str = "auto"
+    fallback: str = "fail_closed"
+    backend_defaults: BackendDefaults = Field(default_factory=BackendDefaults)
+
+    @model_validator(mode="after")
+    def _validate_compute(self) -> "ComputeSettings":
+        active = tuple(self.active_backends)
+        if not active or not set(active).issubset({"cpu", "cuda"}):
+            raise ValueError(
+                "compute.active_backends must be a non-empty subset of "
+                "['cpu', 'cuda']"
+            )
+        if "metal" in active:
+            raise ValueError(
+                "compute.active_backends must not include 'metal'"
+            )
+        if not set(self.documented_backends).issubset(
+            {"cpu", "cuda", "metal"}
+        ):
+            raise ValueError(
+                "compute.documented_backends must contain only "
+                "['cpu', 'cuda', 'metal']"
+            )
+        if self.fallback != "fail_closed":
+            raise ValueError("compute.fallback must be 'fail_closed'")
+        if self.device_placement not in ("auto", "manual"):
+            raise ValueError(
+                "compute.device_placement must be 'auto' or 'manual'"
+            )
+        if self.default_backend not in active:
+            raise ValueError(
+                "compute.default_backend must be listed in "
+                "compute.active_backends"
+            )
+        allowed = set(active) | set(self.documented_backends)
+        provided = set(self.backend_defaults.model_fields_set)
+        if not provided.issubset(allowed):
+            raise ValueError(
+                "compute.backend_defaults keys must be a subset of "
+                "compute.active_backends plus compute.documented_backends"
+            )
+        return self
+
+
+class ObjectStorageSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    provider: str = "s3"
+    bucket: str = "local-llm-models"
+    prefix: str = "gguf/"
+    region: str = "us-east-1"
+    secret_ref: str = "model-supply-credentials"
+    # Optional override for S3-compatible endpoints. Empty means the provider
+    # default; the sync CLI never logs this value or credentials.
+    endpoint: str = ""
+
+
+class SyncSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    enabled: bool = False
+    immutable_weights: bool = True
+    concurrency: int = Field(default=4, gt=0, le=16)
+
+
+class RegistrySettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    supply: str = "hf"
+    object_storage: ObjectStorageSettings = Field(
+        default_factory=ObjectStorageSettings
+    )
+    sync: SyncSettings = Field(default_factory=SyncSettings)
+
+    @model_validator(mode="after")
+    def _validate_registry(self) -> "RegistrySettings":
+        if self.supply not in ("hf", "object_storage", "volume"):
+            raise ValueError(
+                "registry.supply must be one of ['hf', 'object_storage', 'volume']"
+            )
+        if self.supply == "object_storage" and not (
+            self.object_storage.secret_ref
+        ):
+            raise ValueError(
+                "registry.object_storage.secret_ref must be non-empty when "
+                "registry.supply is 'object_storage'"
+            )
+        return self
+
+
+class SecuritySettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    non_root: bool = True
+    read_only_root: bool = True
+    secrets_backend: str = "kubernetes_secret"
+
+    @model_validator(mode="after")
+    def _validate_security(self) -> "SecuritySettings":
+        if self.secrets_backend != "kubernetes_secret":
+            raise ValueError(
+                "security.secrets_backend must be 'kubernetes_secret'"
+            )
+        return self
 
 
 class ModelRecord(BaseModel):
@@ -167,6 +384,10 @@ class Settings(BaseModel):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     download: DownloadSettings = Field(default_factory=DownloadSettings)
     resources: ResourceSettings = Field(default_factory=ResourceSettings)
+    deployment: DeploymentSettings = Field(default_factory=DeploymentSettings)
+    compute: ComputeSettings = Field(default_factory=ComputeSettings)
+    registry: RegistrySettings = Field(default_factory=RegistrySettings)
+    security: SecuritySettings = Field(default_factory=SecuritySettings)
     models: tuple[ModelRecord, ...] = Field(default_factory=tuple)
 
     @property
@@ -216,13 +437,21 @@ class ConfigLoader:
 
 
 __all__ = [
+    "BackendDefaults",
+    "ComputeSettings",
     "ConfigLoader",
+    "DeploymentSettings",
     "GenerationDefaults",
+    "IngressSettings",
     "LlamaDefaults",
     "ModelRecord",
+    "ObjectStorageSettings",
     "PathSettings",
+    "RegistrySettings",
     "ResourceSettings",
+    "SecuritySettings",
     "ServerSettings",
     "Settings",
     "SUPPORTED_MODEL_OPTIONS",
+    "SyncSettings",
 ]

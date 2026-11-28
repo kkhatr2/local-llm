@@ -1,6 +1,6 @@
 # Phase 2: Kubernetes Primary Cloud Target — Architecture & Feasibility Recommendation
 
-Status: **proposed; supporting document only**. The authoritative Phase 2 scope is `docs/requirements.md` under `DECISION-26` and `AC-81`–`AC-167`. This record captures the tech-lead feasibility review; no production code, `local_llm.yaml` key, image, Helm chart, or Terraform module is implemented by it.
+Status: **historical feasibility recommendation; supporting document only**. The authoritative Phase 2 scope is `docs/requirements.md` under `DECISION-26` and `AC-81`–`AC-167`. This record captures the tech-lead feasibility review; the implemented artifact inventory and verification gates are in `docs/deployment.md`.
 
 ## Scope
 
@@ -8,7 +8,7 @@ Primary cloud target: provider-neutral Kubernetes, with AWS EKS as the first con
 
 ## 1. Configuration additions to `local_llm.yaml`
 
-Preserve every current key (`server`, `paths`, `llama_defaults`, `generation_defaults`, `max_n_ctx`, `cache`, `download`, `resources`, `models`); additions are additive new top-level sections. OpenCode V2 behavior is unchanged (`limit` singular, `body.options` only; no `limits` or top-level `options`). These fields are planned only and are not present in the repository config.
+Preserve every current key (`server`, `paths`, `llama_defaults`, `generation_defaults`, `max_n_ctx`, `cache`, `download`, `resources`, `models`); additions are additive new top-level sections. OpenCode V2 behavior is unchanged (`limit` singular, `body.options` only; no `limits` or top-level `options`). These additive fields are now present in the repository config; the snapshot below remains the original recommendation.
 
 ```yaml
 # --- existing keys unchanged ---

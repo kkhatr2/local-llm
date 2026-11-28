@@ -1,0 +1,12 @@
+apiVersion: v2
+name: local-llm
+description: Provider-neutral Kubernetes deployment for the loopback-origin Local LLM API
+type: application
+version: 0.2.0
+appVersion: "2.0.0-phase2"
+annotations:
+  artifacthub.io/license: MIT
+  local-llm.io/phase: "2"
+  local-llm.io/primary-target: kubernetes
+  local-llm.io/reference-provider: aws
+  local-llm.io/metal-support: documentation-only

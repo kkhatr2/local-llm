@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 CACHE_SCHEMA_VERSION = 1
+
+_SAFE_INSTANCE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 CACHE_EXCLUDED_REQUEST_FIELDS = frozenset(
     {
@@ -34,6 +37,7 @@ class CacheConfig:
     ttl_days: float = 30.0
     max_size_mb: float = 1024.0
     replay_sse: bool = True
+    scope: str = "per_instance"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "dir", Path(self.dir))
@@ -41,6 +45,22 @@ class CacheConfig:
             raise ValueError("cache.ttl_days must be >= 0")
         if self.max_size_mb <= 0:
             raise ValueError("cache.max_size_mb must be > 0")
+        if self.scope != "per_instance":
+            raise ValueError("cache.scope must be 'per_instance'")
+
+
+def _sanitize_instance_id(instance_id: str) -> str:
+    """Return a single safe path segment for per-instance cache isolation."""
+
+    if (
+        not instance_id
+        or instance_id in (".", "..")
+        or not _SAFE_INSTANCE_ID.fullmatch(instance_id)
+    ):
+        raise ValueError(
+            "cache instance_id must be a safe path segment ([A-Za-z0-9._-]+)"
+        )
+    return instance_id
 
 
 def utc_now() -> datetime:
@@ -227,10 +247,14 @@ class ResponseCache:
         *,
         root: Path | str | None = None,
         clock: Clock | None = None,
+        instance_id: str | None = None,
     ) -> None:
         self.config = config or CacheConfig()
         self.root = Path(root or Path.cwd()).resolve()
         self._clock = clock or utc_now
+        self.instance_id = (
+            _sanitize_instance_id(instance_id) if instance_id is not None else None
+        )
         self.dir = self._resolve_dir()
 
     def _resolve_dir(self) -> Path:
@@ -244,7 +268,13 @@ class ResponseCache:
         if resolved.is_relative_to(models_dir):
             raise ValueError("cache.dir may not point inside models/")
 
-        return resolved
+        if self.instance_id is None:
+            return resolved
+
+        instance_dir = (resolved / self.instance_id).resolve()
+        if instance_dir == resolved or not instance_dir.is_relative_to(resolved):
+            raise ValueError("cache instance directory must stay inside cache.dir")
+        return instance_dir
 
     def path_for(self, key: str) -> Path:
         if not _is_hex_key(key):
@@ -302,7 +332,11 @@ class ResponseCache:
         }
 
         try:
-            self.dir.mkdir(parents=True, exist_ok=True)
+            self.dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                os.chmod(self.dir, 0o700)
+            except OSError:
+                pass
             self._atomic_write(path, entry)
             self.evict()
             return True
@@ -313,6 +347,23 @@ class ResponseCache:
         if not self.config.replay_sse:
             raise RuntimeError("SSE replay is disabled")
         return iter_sse_frames(response)
+
+    def remove_alias(self, alias: str) -> int:
+        """Delete cache entries stored for ``alias``, leaving other aliases intact."""
+
+        if not self.dir.exists():
+            return 0
+
+        removed = 0
+        for path in self.dir.glob("*.json"):
+            try:
+                entry = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if isinstance(entry, dict) and entry.get("alias") == alias:
+                if self._delete(path):
+                    removed += 1
+        return removed
 
     def evict(self) -> int:
         if not self.dir.exists():

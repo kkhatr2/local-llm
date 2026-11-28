@@ -1,0 +1,10 @@
+Local LLM API is deployed as an internal ClusterIP service.
+
+The application remains auth-less. Public access is available only when
+gateway.enabled=true. The gateway terminates TLS (>= 1.2), validates the API
+key from a Kubernetes Secret before forwarding, and exposes only /health and
+/v1/models/{alias}/chat/completions. Direct pod access is denied by
+NetworkPolicy.
+
+Apple Metal is documentation-only. Do not select a Metal image or claim Metal
+verification from this chart.

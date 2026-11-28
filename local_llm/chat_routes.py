@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from contextlib import ExitStack
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from local_llm.cache import (
     CACHE_EXCLUDED_REQUEST_FIELDS,
@@ -16,6 +17,8 @@ from local_llm.cache import (
 )
 from local_llm.error_mapper import ErrorMapper
 from local_llm.locking import locked
+from local_llm.model_supply import supply_for
+from local_llm.preflight import ResourceError
 from local_llm.registry import ModelState, UnknownAliasError
 from local_llm.runtime import (
     SAMPLING_OPTION_KEYS,
@@ -42,9 +45,36 @@ class ChatCompletionRequest(BaseModel):
     stop: Any = None
     options: dict[str, Any] = Field(default_factory=dict)
 
+    @field_validator("messages")
+    @classmethod
+    def _messages_valid(cls, value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not value:
+            raise ValueError("messages must be a non-empty list")
+        for message in value:
+            if not isinstance(message, dict):
+                raise ValueError("messages items must be objects")
+            if not isinstance(message.get("role"), str) or not isinstance(
+                message.get("content"), str
+            ):
+                raise ValueError("messages items require string role and content")
+        return value
+
+    @field_validator("stop")
+    @classmethod
+    def _stop_valid(cls, value: Any) -> Any:
+        if value is None:
+            return value
+        if isinstance(value, str) and value:
+            return value
+        if isinstance(value, list) and value and all(
+            isinstance(item, str) and item for item in value
+        ):
+            return value
+        raise ValueError("stop must be a string or a non-empty list of strings")
+
 
 def _has_path(services: Any, entry: Any) -> bool:
-    return entry.path is not None and services.downloader.exists(
+    return entry.path is not None and supply_for(services).exists(
         entry.record, services.root
     )
 
@@ -65,7 +95,7 @@ def _resolve_path(services: Any, alias: str) -> Any:
                 return entry.path
             services.preflight.check_download(services.root)
 
-        path = services.downloader.download(entry.record, services.root)
+        path = supply_for(services).resolve(entry.record, services.root)
 
         with locked(services.lock, timeout):
             entry = services.registry.get(alias)
@@ -93,11 +123,28 @@ def _cache_response(services: Any, request: Any, cached: Any) -> Any:
     return JSONResponse(cached)
 
 
+def _validate_placement(services: Any, path: Any) -> None:
+    """Fail closed when the selected backend cannot host this GGUF."""
+
+    placement = getattr(services, "device_placement", None)
+    if placement is None:
+        return
+    decision = getattr(services, "backend", None)
+    backend = getattr(decision, "backend", "cpu")
+    n_gpu_layers = int(dict(getattr(decision, "load_options", {})).get("n_gpu_layers", 0))
+    try:
+        model_size_bytes = Path(path).stat().st_size
+    except OSError:
+        raise ResourceError("model file is unavailable for placement") from None
+    placement.validate(backend, model_size_bytes, n_gpu_layers=n_gpu_layers)
+
+
 def _ensure_loaded(
     services: Any, alias: str, entry: Any, path: Any, options: dict[str, Any]
 ) -> None:
     """Prepare the resident model; the caller holds the lifecycle lock."""
 
+    _validate_placement(services, path)
     services.runtime.cancel_idle_unload()
     loaded_alias = getattr(services.runtime, "loaded_alias", None)
     if services.runtime.is_loaded() and loaded_alias != alias:
@@ -235,6 +282,23 @@ def _stream_chat(
     return response
 
 
+def _validate_request_limits(services: Any, request: ChatCompletionRequest) -> None:
+    ceiling = getattr(
+        getattr(services.settings, "generation_defaults", None), "max_tokens", None
+    )
+    if ceiling is None:
+        return
+    values = [request.max_tokens]
+    options = request.options or {}
+    if "max_tokens" in options:
+        values.append(options["max_tokens"])
+    for value in values:
+        if value is None:
+            continue
+        if not isinstance(value, int) or not 0 < value <= int(ceiling):
+            raise ValueError(f"max_tokens must be between 1 and {int(ceiling)}")
+
+
 def create_chat_router(services: Any) -> APIRouter:
     router = APIRouter()
 
@@ -259,6 +323,7 @@ def create_chat_router(services: Any) -> APIRouter:
 
     @router.post("/v1/models/{alias}/chat/completions")
     def chat(alias: str, request: ChatCompletionRequest) -> Any:
+        _validate_request_limits(services, request)
         entry = services.registry.get(alias)
         body = request.model_dump()
         options = body.get("options") or {}
@@ -273,7 +338,7 @@ def create_chat_router(services: Any) -> APIRouter:
         }
 
         path = entry.path
-        if path is None or not services.downloader.exists(entry.record, services.root):
+        if path is None or not supply_for(services).exists(entry.record, services.root):
             path = _resolve_path(services, alias)
             entry = services.registry.get(alias)
 
@@ -285,7 +350,13 @@ def create_chat_router(services: Any) -> APIRouter:
         }
         runtime_options = {
             "load": merge_load_options(
-                services.settings.llama_defaults, entry.record.options, options
+                getattr(
+                    services,
+                    "effective_llama_defaults",
+                    services.settings.llama_defaults,
+                ),
+                entry.record.options,
+                options,
             ),
             "sampling": merge_sampling_options(
                 services.settings.generation_defaults,

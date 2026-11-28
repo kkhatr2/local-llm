@@ -1,0 +1,37 @@
+FROM continuumio/miniconda3:24.9.2-0@sha256:39b820af05f0f9bb986ca145a0d077bbd3bd866256277dd869fefb93bd03cd21
+
+ENV CONDA_ENV=local-llm-cuda \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MODEL_DIR=/app/models \
+    CACHE_DIR=/app/.cache/responses \
+    PATH=/opt/conda/envs/local-llm-cuda/bin:$PATH
+
+WORKDIR /app
+
+# CUDA flavor uses its own generated explicit lock. No model weights, tokens,
+# cache entries, or mutable pip upgrade steps are part of this image.
+COPY environment-cuda-64.lock /app/environment-cuda-64.lock
+RUN conda create -y --name "$CONDA_ENV" --file /app/environment-cuda-64.lock \
+    && conda run -n "$CONDA_ENV" pip install --no-deps --disable-pip-version-check --root-user-action=ignore \
+       'https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.37-cu124/llama_cpp_python-0.3.37-py3-none-manylinux_2_35_x86_64.whl#sha256=af5295fbc6d88875830ad22c04cfec6d2dd505f4f8fcb2e52a1a30e718525955' \
+    && conda clean -afy \
+    && groupadd --gid 10001 appuser \
+    && useradd --uid 10001 --gid 10001 --home-dir /home/appuser \
+       --shell /usr/sbin/nologin appuser \
+    && mkdir -p /app/models /app/.cache/responses /home/appuser \
+    && chown -R 10001:10001 /app /home/appuser
+
+COPY local_llm.yaml /app/local_llm.yaml
+COPY local_llm /app/local_llm
+COPY tests /app/tests
+COPY docs /app/docs
+
+USER 10001:10001
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)" || exit 1
+
+CMD ["uvicorn", "local_llm.api:app", "--host", "0.0.0.0", "--port", "8000"]

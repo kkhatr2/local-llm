@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,8 +19,20 @@ class MappedError:
     body: dict[str, Any]
 
 
+_SAFE_RESOURCE_DETAIL = re.compile(r"^[A-Za-z0-9 ._'<>-]+$")
+
+
 def _body(code: str, message: str, error_type: str) -> dict[str, Any]:
     return {"error": {"code": code, "message": message, "type": error_type}}
+
+
+def _resource_message(exception: BaseException) -> str:
+    """Expose only a safe domain detail such as the requested backend."""
+
+    detail = str(exception).strip()
+    if detail and _SAFE_RESOURCE_DETAIL.fullmatch(detail) and "Traceback" not in detail:
+        return f"Required resources are unavailable: {detail}"
+    return "Required resources are unavailable."
 
 
 class ErrorMapper:
@@ -39,7 +52,7 @@ class ErrorMapper:
                 503,
                 _body(
                     "resource_unavailable",
-                    "Required resources are unavailable.",
+                    _resource_message(exception),
                     error_type,
                 ),
             )

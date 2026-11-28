@@ -1,0 +1,24 @@
+# Supply-chain promotion gates for Phase 2 images.
+# CI must fail closed before deploy/image-digests.yaml is updated.
+version: 1
+gates:
+  - id: signature-verify
+    tool: cosign
+    command: cosign verify --certificate-identity-regexp '.*' --certificate-oidc-issuer-regexp '.*' "$IMAGE_DIGEST"
+    required: true
+    description: Verify the OCI signature before promotion.
+  - id: sbom-archive
+    tool: syft
+    command: syft "$IMAGE_DIGEST" -o cyclonedx-json > "sbom/${IMAGE_FLAVOR}.cdx.json"
+    required: true
+    description: Archive one SBOM for each promoted digest.
+  - id: vulnerability-scan
+    tool: grype
+    command: grype "$IMAGE_DIGEST" --fail-on high
+    required: true
+    description: Fail the gate on high or critical findings.
+  - id: digest-promotion
+    tool: python
+    command: python -m deploy.promote_digests --cpu "$CPU_DIGEST" --cuda "$CUDA_DIGEST"
+    required: true
+    description: Promote only verified digests into the canonical pin file.

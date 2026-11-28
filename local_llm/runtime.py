@@ -238,8 +238,11 @@ class LlamaRuntimeAdapter:
             if callback is not None:
                 try:
                     callback()
-                except Exception:
-                    logger.exception("idle unload callback failed")
+                except Exception as exc:
+                    logger.error(
+                        "idle unload callback failed: error=%s",
+                        type(exc).__name__,
+                    )
         finally:
             if acquired and lock is not None:
                 lock.release()

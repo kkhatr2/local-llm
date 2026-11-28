@@ -1,3 +1,9 @@
+x-phase2-image-digests:
+  # Keep in sync with deploy/image-digests.yaml. Local Compose still builds
+  # from source; the digest pins are consumed by cloud promotion tooling.
+  cpu: &cpu_image_digest "repository/local-llm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+  cuda: &cuda_image_digest "repository/local-llm-api-cuda@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
 services:
   api:
     build: .
@@ -45,6 +51,7 @@ services:
       - ./opencode.jsonc:/app/opencode.jsonc:ro
       - ./local_llm:/app/local_llm
       - ./tests:/app/tests
+      - .:/workspace:ro
 
   dev:
     build: .

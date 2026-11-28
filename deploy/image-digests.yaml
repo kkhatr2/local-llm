@@ -1,0 +1,8 @@
+# Phase 2 image promotion pins (not secret material).
+#
+# These are placeholder digest-shaped values. Platform CI replaces them with the
+# actual signed, promoted manifest digests for each compute flavor before a
+# deployment is promoted. Compose, Helm, and Terraform all consume this file so
+# every artifact references the same digest for the selected flavor.
+cpu: repository/local-llm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111
+cuda: repository/local-llm-api-cuda@sha256:2222222222222222222222222222222222222222222222222222222222222222

@@ -1,0 +1,77 @@
+replicaCount: 1
+
+image:
+  # Digest-only promotion values. Override one of these from
+  # deploy/image-digests.yaml; never set a mutable tag.
+  flavor: cpu
+  cpuDigest: repository/local-llm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  cudaDigest: repository/local-llm-api-cuda@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+service:
+  type: ClusterIP
+  port: 8000
+
+# The application is auth-less. Public API-key validation belongs to the
+# gateway only. No secret value is stored in this file or local_llm.yaml.
+gateway:
+  enabled: false
+  className: gateway.networking.k8s.io/ingress
+  hostname: local-llm.example.com
+  namespace: local-llm-gateway
+  certificateSecretRef: local-llm-tls
+  apiKeySecretRef: local-llm-api-key
+  apiKeyHeader: X-API-Key
+  allowedAliasPrefix: /v1/models/
+
+# Model supply is an edge concern. When enabled, an init container runs the
+# object-storage sync CLI using credentials projected from a K8s Secret.
+modelSupply:
+  syncEnabled: false
+  credentialsSecretRef: model-supply-credentials
+
+security:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  seccompProfile: RuntimeDefault
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    cpu: "2"
+    memory: 4Gi
+
+# Writable mounts are limited to models, cache, and /tmp.
+persistence:
+  models:
+    existingClaim: ""
+    size: 20Gi
+    storageClass: ""
+  cache:
+    existingClaim: ""
+    size: 2Gi
+    storageClass: ""
+
+networkPolicy:
+  enabled: true
+  # Direct pod access is denied; only the gateway namespace may reach :8000.
+  allowedNamespaces:
+    - local-llm-gateway
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+podAnnotations: {}
+podLabels: {}
