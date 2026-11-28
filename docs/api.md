@@ -1,6 +1,6 @@
 # API operator runbook
 
-Status: **implemented HTTP contract; external boundaries exercised by a token-authenticated real-model smoke test**. Request/response shapes and status codes below are derived from the route code (`local_llm/chat_routes.py`, `local_llm/admin_routes.py`), error mapping (`local_llm/error_mapper.py`, `local_llm/composition.py`), and Compose config (`docker-compose.yml`). Contract tests use a fake Hugging Face CLI and a fake Llama runtime. A real `hf` download and real GGUF CPU inference were verified inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` using `HF_TOKEN` injected from `private.txt`; the weights and cache entries were removed afterward.
+Status: **implemented HTTP contract; external boundaries exercised by authenticated and unauthenticated real-model smoke tests**. Request/response shapes and status codes below are derived from the route code (`local_llm/chat_routes.py`, `local_llm/admin_routes.py`), error mapping (`local_llm/error_mapper.py`, `local_llm/composition.py`), and Compose config (`docker-compose.yml`). Contract tests use a fake Hugging Face CLI and a fake Llama runtime. A real `hf` download and real GGUF CPU inference were verified inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` using `HF_TOKEN` injected from `private.txt`; the weights and cache entries were removed afterward.
 
 Authoritative scope: `docs/requirements.md`. Component/design detail: `docs/architecture.md`. Runtime settings: `local_llm.yaml`.
 
@@ -38,15 +38,15 @@ Mounts and persistence:
 | `models/` | bind-mounted into the container; GGUF weights land in `models/<alias>/` | gitignored — never commit weights |
 | `.cache/` | bind-mounted; completed responses in `.cache/responses/` | gitignored — never commit cache files |
 | `local_llm.yaml` | mounted read-only (`:ro`) | committed config |
-| `private.txt` | read by Compose as `env_file`; not copied into the image | gitignored — never commit the token |
+| `private.txt` | optionally read by Compose as `env_file`; not copied into the image | gitignored — never commit the token |
 
-Create `private.txt` at the repository root with one line before running Compose:
+`private.txt` is optional. To enable authenticated, rate-limit-favored public downloads, create it at the repository root with one line:
 
 ```text
 HF_TOKEN=<token>
 ```
 
-`docker-compose.yml` injects that value as `HF_TOKEN` into the `api`, `tests`, and `dev` services. The file is required, so Compose fails fast when it is missing. `hf` and `huggingface_hub` read the variable automatically for authenticated, rate-limit-favored public downloads. The token is never passed as a CLI argument, baked into the image, or written to logs.
+`docker-compose.yml` optionally injects that value as `HF_TOKEN` into the `api`, `tests`, and `dev` services. The `env_file` entries use `required: false`, so Compose and the service start without the file; public GGUF downloads then proceed unauthenticated. `hf` and `huggingface_hub` read the variable automatically when present. The token is never passed as a CLI argument, baked into the image, or written to logs.
 
 ### Security boundaries for the top-seven plan
 
@@ -283,7 +283,8 @@ Purpose: unregister an alias without deleting its weights or changing the runnin
 
 ## Verification status
 
-- Verified inside Docker: the final 135 contract tests via `docker compose run --rm tests`, including every route above, cache hit/miss, native incremental SSE, cached SSE replay, 404/409/422/503/502 mappings, lazy loading, idle retention, stream error/cancellation/lock cleanup, the OpenCode-config checks, the container-environment token check, and capture of the model output for `what is your name, respond using minimal tokens?`. `docker compose --profile serve config --no-interpolate` confirms the loopback-only publish, `env_file`, and read-only config mount. Idle retention (`DECISION-21`, `AC-57`–`AC-60`), download hardening (`DECISION-22`, `AC-62`–`AC-66`), and streaming (`DECISION-23`, `AC-67`–`AC-71`) are verified.
+- Verified inside Docker: the final 136 contract tests via `docker compose run --rm tests`, including every route above, cache hit/miss, native incremental SSE, cached SSE replay, 404/409/422/503/502 mappings, lazy loading, idle retention, stream error/cancellation/lock cleanup, optional-token and Compose-boundary checks, the OpenCode-config checks, and capture of the model output for `what is your name, respond using minimal tokens?`. The suite and `docker compose --profile serve config --no-interpolate` both pass with and without `private.txt`; the latter confirms the loopback-only publish, optional `env_file`, and read-only config mount. Idle retention (`DECISION-21`, `AC-57`–`AC-60`), download hardening (`DECISION-22`, `AC-62`–`AC-66`), streaming (`DECISION-23`, `AC-67`–`AC-71`), and optional `HF_TOKEN` (`DECISION-24`, `AC-73`–`AC-76`) are verified.
 - Verified: a token-authenticated real-model smoke test inside Docker downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` with `hf` without the unauthenticated warning. From host loopback, `GET /health`, `GET /v1/models`, and `POST /v1/models/qwen25-coder-05b/chat/completions` returned `200`; the prompt `what is your name, respond using minimal tokens?` produced `I am Qwen.`. A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Weights and cache entries were removed afterward. Contract tests continue to use fakes.
 - Verified (`AC-72`): a real-model streaming smoke against the Docker API over host loopback used `qwen25-coder-05b` and a short divide-function prompt. The cache-miss response contained 27 SSE frames with 24 separate content deltas and `[DONE]`; the equivalent non-streaming request returned the assembled completion with the same ID/created timestamp, and a repeated streaming request replayed one cached content delta plus `[DONE]`. A forced `curl` disconnect during a separate fresh stream was followed by admin unload returning `{"unloaded":false}` with exit `0`, confirming disconnect cleanup had already closed chunks, unloaded the model, and released the lifecycle lock.
+- Verified (`AC-73`–`AC-76`): with `private.txt` temporarily absent, `docker compose --profile serve config --no-interpolate` and all 136 Docker tests passed. A no-token real-model smoke then downloaded the public Qwen GGUF with `HF_TOKEN` absent in both dev and API containers, reached `/health`, and returned `I am Qwen.` for the name prompt. The file was restored and the API recreated afterward.
 - Verified (`AC-61`): a fresh standalone OpenCode session (`ses_local-llm-idle-e2e-20261127-1600`) using `local-qwen-coder-05b/chat` sent `hi`, then `what is your name?`, then `repeat your answer in one short sentence.`. The outputs were `Hello! How can I assist you today?`, `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.`, and `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.` All three calls were served by the Docker API over loopback.

@@ -11,7 +11,7 @@ All development, testing, deployment, and operation must happen inside Docker co
 - `Dockerfile` — Miniconda-based image.
 - `docker-compose.yml` — test, dev shell, and API services.
 - `opencode.jsonc` — OpenCode providers for the local models.
-- `private.txt` — untracked `HF_TOKEN=<token>` file injected into every Compose service for faster public-model downloads.
+- `private.txt` — optional, untracked `HF_TOKEN=<token>` file injected into every Compose service for faster public-model downloads; public downloads work without it.
 - `local_llm/cache.py` — implemented response cache.
 - `local_llm/config.py` — implemented configuration loader and immutable settings.
 - `local_llm/registry.py` — implemented in-memory model registry.
@@ -38,9 +38,9 @@ Run tests in the container:
 docker compose run --rm tests
 ```
 
-The full suite contains 135 cache, config, registry, downloader, resource-preflight, runtime, streaming-assembly, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests and has been verified with this command. It includes incremental-streaming, stream-error/cancellation, cache-assembly, and lock-release coverage, plus a test that captures the model output for `what is your name, respond using minimal tokens?`.
+The full suite contains 136 cache, config, registry, downloader, resource-preflight, runtime, streaming-assembly, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests and has been verified with this command both with and without `private.txt`. It includes incremental-streaming, stream-error/cancellation, cache-assembly, lock-release, optional-token, and Compose-boundary coverage, plus a test that captures the model output for `what is your name, respond using minimal tokens?`.
 
-`docker-compose.yml` injects `HF_TOKEN` from the untracked `private.txt` into the `api`, `tests`, and `dev` services. Compose fails fast if the file is missing. `hf` and `huggingface_hub` read this variable automatically, so no token is passed on the command line or written to application code.
+`docker-compose.yml` optionally injects `HF_TOKEN` from the untracked `private.txt` into the `api`, `tests`, and `dev` services. The `env_file` entries use `required: false`, so Compose starts without the file and public GGUF downloads proceed unauthenticated. When present, `hf` and `huggingface_hub` read the variable automatically, so no token is passed on the command line or written to application code.
 
 Configuration path: `LOCAL_LLM_CONFIG` selects the YAML file; an explicit path argument takes precedence, then the env var, then repo-root `local_llm.yaml`.
 
@@ -144,7 +144,7 @@ Cache files are ignored by Git.
 
 ## Security and top-seven plan
 
-The 2026-11-27 plan for the seven most desirable features preserves the full-request cache with no bypass, loopback-only exposure without auth, fail-closed preflight, Docker-only execution, `private.txt` → `HF_TOKEN` injection, and no 7B cap. Item 4 was then changed by user decision: the GGUF is still loaded lazily, but it stays resident for an idle window after the last prompt instead of unloading immediately. The baseline commit `3d7e43a` was pushed to `origin/main` before the plan was written.
+The 2026-11-27 plan for the seven most desirable features preserves the full-request cache with no bypass, loopback-only exposure without auth, fail-closed preflight, Docker-only execution, optional `private.txt` → `HF_TOKEN` injection, and no 7B cap. Item 4 was then changed by user decision: the GGUF is still loaded lazily, but it stays resident for an idle window after the last prompt instead of unloading immediately. The baseline commit `3d7e43a` was pushed to `origin/main` before the plan was written.
 
 Security boundaries for this plan:
 
@@ -152,10 +152,10 @@ Security boundaries for this plan:
 - Admin `POST /admin/models` is a synchronous public-model download. Prefer startup-configured aliases, keep the configured timeout, and rely on disk/RAM preflight; async jobs and approved-alias gating are deferred.
 - Startup downloads are bounded by `download.max_parallel_downloads` (default `4`; valid `> 0` and `<= 16`) and run only after fail-closed preflight checks. On-demand GGUF restoration runs under a per-alias download lock, never under the process-wide lifecycle lock.
 - `DELETE /admin/models/{alias}` unregisters only. Call the unload endpoint first if an in-memory instance must be released.
-- Use `docker compose --profile serve config --no-interpolate` when sharing configuration; plain `docker compose config` resolves and prints `HF_TOKEN`.
+- Use `docker compose --profile serve config --no-interpolate` when sharing configuration; plain `docker compose config` resolves and prints `HF_TOKEN` when it is configured.
 - Auth/rate limiting, non-root container, cache encryption, content-hash fingerprints, and concurrent generation are deferred product decisions under `ASSUMPTION-17`.
 
-See `docs/requirements.md` for `AC-49` through `AC-72`, `docs/architecture.md` for the component/security boundary mapping, and `docs/security-report.md` for the living mitigation report. That report remains a draft while `ASSUMPTION-17` is open.
+See `docs/requirements.md` for `AC-49` through `AC-76`, `docs/architecture.md` for the component/security boundary mapping, and `docs/security-report.md` for the living mitigation report. That report remains a draft while `ASSUMPTION-17` is open.
 
 ## OpenCode configuration
 
@@ -188,8 +188,9 @@ After editing OpenCode configuration, use `/reload` if the change is not picked 
 
 ## Verification evidence
 
-- The final `docker compose run --rm tests` run passed all 135 cache, config, registry, downloader, resource-preflight, runtime, streaming-assembly, error-mapping, chat-route, admin-route, composition, alias-download-lock, OpenCode-config, and container-environment tests inside the Miniconda container (`Ran 135 tests ... OK`), including idle-retention and true incremental-streaming cases. Idle retention (`DECISION-21`, `AC-57`–`AC-60`), download hardening (`DECISION-22`, `AC-62`–`AC-66`), and streaming (`DECISION-23`, `AC-67`–`AC-72`) are verified.
-- `docker compose --profile serve config --no-interpolate` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, the host publish is loopback-only (`127.0.0.1:8000`), `env_file` is present for `api`, `tests`, and `dev`, and the config mount is read-only. Use `--no-interpolate` when sharing config output because plain `docker compose config` resolves and prints `HF_TOKEN`. `git check-ignore -v private.txt models/ .cache/responses/` confirms all three paths are ignored.
+- The final `docker compose run --rm tests` run passed all 136 cache, config, registry, downloader, resource-preflight, runtime, streaming-assembly, error-mapping, chat-route, admin-route, composition, alias-download-lock, OpenCode-config, and container-environment tests inside the Miniconda container (`Ran 136 tests ... OK`) both with and without `private.txt`, including idle-retention, true incremental-streaming, and optional-token cases. Idle retention (`DECISION-21`, `AC-57`–`AC-60`), download hardening (`DECISION-22`, `AC-62`–`AC-66`), streaming (`DECISION-23`, `AC-67`–`AC-72`), and optional `HF_TOKEN` (`DECISION-24`, `AC-73`–`AC-76`) are verified.
+- `docker compose --profile serve config --no-interpolate` was verified: the API command is `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, the host publish is loopback-only (`127.0.0.1:8000`), `env_file` is present but optional (`required: false`) for `api`, `tests`, and `dev`, and the config mount is read-only. Use `--no-interpolate` when sharing config output because plain `docker compose config` resolves and prints `HF_TOKEN` when configured. `git check-ignore -v private.txt models/ .cache/responses/` confirms all three paths are ignored.
 - OpenCode end-to-end smoke (`AC-61`): **passed** with a fresh standalone session (`ses_local-llm-idle-e2e-20261127-1600`) using `local-qwen-coder-05b/chat`. `hi` returned `Hello! How can I assist you today?`; follow-up `what is your name?` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.`; follow-up `repeat your answer in one short sentence.` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.` All three calls were served by the Docker API over loopback.
 - Real-model streaming smoke (`AC-72`): **passed against the Docker API over host loopback** with `qwen25-coder-05b`. A cache-miss request for a short Python divide function returned 27 SSE frames with 24 separate content deltas and `[DONE]`; the equivalent non-streaming request returned the assembled completion with the same ID/created timestamp, and a repeated streaming request replayed one cached content delta plus `[DONE]`. A forced `curl` disconnect during a separate fresh stream was followed by admin unload returning `{"unloaded":false}` with exit `0`, confirming disconnect cleanup. OpenCode V2/96-token contract tests remain green.
+- Optional-token smoke (`AC-73`–`AC-76`): **passed** with `private.txt` temporarily absent. Compose config and all 136 tests succeeded, the dev and API containers reported no `HF_TOKEN`, the public Qwen GGUF downloaded without a token, `/health` became ready, and the name prompt returned `I am Qwen.` The file was restored and the API recreated afterward.
 - Real-model smoke test: **passed inside Docker with token-authenticated downloads**. The API container reported `HF_TOKEN configured: True`, and `hf` downloaded `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` without the unauthenticated-request warning. From the host loopback, `GET /health` and `GET /v1/models` returned `200`; `POST /v1/models/qwen25-coder-05b/chat/completions` with `what is your name, respond using minimal tokens?` returned `200` with content `I am Qwen.` (usage 39/5/44). A repeat replayed the cached response, admin unload returned `200`, and admin delete returned `204`. Downloaded weights and cache entries were removed afterward. Contract tests still use a fake Hugging Face CLI and fake Llama runtime. Streaming cache hits replay SSE frames reconstructed from stored complete responses; streaming cache misses use native incremental llama.cpp generation.

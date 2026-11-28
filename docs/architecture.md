@@ -23,7 +23,7 @@ There are **16 modeled components**:
 | C8 | AdminRoutes | Application | Implemented | Exposes runtime add, unload, and remove operations. |
 | C9 | ResponseCache | Application | Implemented | Stores completed responses, keys full normalized requests, evicts by TTL/size, and replays SSE. |
 | C10 | ErrorMapper | Application | Implemented | Converts config, download, preflight, runtime, and validation failures into stable HTTP errors. |
-| C11 | DockerRuntime | Boundary | Implemented as files | Builds and runs the Miniconda image, injects `HF_TOKEN` from `private.txt` via Compose `env_file`, and publishes the container port only on host loopback. |
+| C11 | DockerRuntime | Boundary | Implemented as files | Builds and runs the Miniconda image, optionally injects `HF_TOKEN` from `private.txt` via Compose `env_file`, and publishes the container port only on host loopback. |
 | C12 | OpenCodeClient | Boundary | Implemented as config | Calls each alias-specific OpenAI-compatible endpoint using `limit` and `body.options`. |
 | C13 | HuggingFaceCli | Boundary | External | Performs public model downloads inside the container. |
 | C14 | LlamaCppLibrary | Boundary | External dependency | Provides `Llama(...)`, `create_chat_completion`, and streaming generation on CPU. |
@@ -222,7 +222,7 @@ classDiagram
 | C9 ResponseCache | Cache key and completed response | Hashes canonical request data, writes atomically, expires and evicts entries, replays SSE. | Cached response or cache miss. | Corrupt or expired entries are deleted and treated as misses. |
 | C10 ErrorMapper | Domain and runtime exceptions | Converts exceptions to stable HTTP status codes and sanitized envelopes. | HTTP error response. | Preserves safe cause metadata without leaking paths or stack traces. |
 | C16 ChatStreamAssembler | Native OpenAI-shaped chunk mappings | Emits each chunk as `data: <json>\n\n` and accumulates choice deltas into one `chat.completion` response. | Live SSE frames and a completed response for C9. | Empty streams fail; incomplete responses are never cached. Usage is included only when supplied by runtime chunks. |
-| C11 DockerRuntime | Dockerfile, Compose file, volumes, `private.txt` | Builds Miniconda image, injects `HF_TOKEN` into `api`/`tests`/`dev`, mounts `models/` and `.cache/`, and publishes only host loopback. | Containerized test/dev/API environments. | Invalid Compose config or missing `private.txt` fails before deployment. |
+| C11 DockerRuntime | Dockerfile, Compose file, volumes, optional `private.txt` | Builds Miniconda image, optionally injects `HF_TOKEN` into `api`/`tests`/`dev`, mounts `models/` and `.cache/`, and publishes only host loopback. | Containerized test/dev/API environments. | Invalid Compose config fails before deployment; a missing `private.txt` no longer blocks public-model operation. |
 | C12 OpenCodeClient | `opencode.jsonc` providers | Sends chat requests to alias-specific base URLs with `limit` and `body.options`. | Selectable local models. | Missing server appears as provider/model unavailable. |
 | C13 HuggingFaceCli | Public repo ID, filename, revision | Downloads exact GGUF file to `models/<alias>/`. | Files on mounted volume. | Auth, gated, or network failures propagate to C4. |
 | C14 LlamaCppLibrary | GGUF path and llama options | Performs CPU inference and streaming generation. | Completion chunks or full response. | Load or generation errors propagate to C6. |
@@ -316,7 +316,7 @@ flowchart TB
     ModelsVol[("bind mount ./models")]
     CacheVol[("bind mount ./.cache/responses")]
     ConfigFile[("read-only ./local_llm.yaml")]
-    TokenFile[("private.txt -> HF_TOKEN env via Compose env_file")]
+    TokenFile[("optional private.txt -> HF_TOKEN env via Compose env_file")]
     OC["OpenCode"]
 
     Host --> Loop
@@ -345,7 +345,7 @@ flowchart TB
 - Cache keys include request `options`; changing `n_ctx`, `n_batch`, `flash_attn`, `temperature`, `top_p`, `top_k`, `min_p`, or `repeat_penalty` produces a different key.
 - `make_cache_key` receives a validated alias from the registry and a fingerprint from `weight_fingerprint`; both are non-empty by contract and are not re-checked inside the cache.
 - No component reads host Python or host conda state.
-- `HF_TOKEN` is injected by C11 from `private.txt` into the container environment; C4/C13 never receive it as a CLI argument and no component logs its value.
+- `HF_TOKEN` is optionally injected by C11 from `private.txt` into the container environment; without it, C4 downloads public GGUFs unauthenticated. C4/C13 never receive the token as a CLI argument and no component logs its value.
 - All persistent state is through the two mounted volumes and the read-only config file.
 
 ## Security boundary and top-seven plan
@@ -358,21 +358,22 @@ The baseline for this plan was pushed to `origin/main` as `3d7e43a` before any p
 | Plaintext response data at rest | C9 writes one completed-response JSON per cache key under `.cache/responses/` | Document response-text sensitivity, 30-day TTL, 1 GiB cap, and filesystem access restriction; do not put secrets in prompts | Encryption and shorter TTL are deferred; prompt text participates in the SHA-256 key but is not stored verbatim |
 | Cache staleness after a same-size GGUF swap | C9 fingerprint is `size:mtime_ns` from C3/C6 | Keep alias/revision and fingerprint in the key; document immutable-weight assumption | Content hash/versioned alias is deferred |
 | Local disk exhaustion from synchronous admin downloads | C8 `POST /admin/models`, C4 downloader, C5 disk preflight | Prefer startup-configured models; keep configured download timeout and disk fail-closed preflight | Async queue and admin gating are deferred |
-| Token exposure through Compose output or logs | C11 injects `HF_TOKEN` from `private.txt`; C4 uses `hf` without token CLI arguments | Keep `env_file`, gitignore/dockerignore, and mandate `--no-interpolate` when sharing config | Plain `docker compose config` still prints the resolved token; operational discipline remains required |
+| Token exposure through Compose output or logs | C11 optionally injects `HF_TOKEN` from `private.txt`; C4 uses `hf` without token CLI arguments | Keep optional `env_file`, gitignore/dockerignore, and mandate `--no-interpolate` when sharing config | Plain `docker compose config` still prints the resolved token when configured; operational discipline remains required |
 | Root container process | C11 Dockerfile/Compose boundary | No runtime behavior change in this pass; keep read-only config mounts and no host runtime dependencies | Non-root `USER` is deferred pending Windows bind-mount ownership verification under `ASSUMPTION-17` |
 | Lock contention / head-of-line blocking and idle model retention | C6/C7 process-wide lock; `server.lock_timeout_seconds: 600`; `503` on contention; at most one resident GGUF, kept for `server.idle_unload_seconds` (default 180 s, validated `> 0` and `<= 86400` s / 24 h) after the last prompt | Document the wait and stable error; the idle timer uses the same lock; a resident GGUF stays in container memory after the response but is not a response cache; admin unload cancels the timer; keep OpenCode 96-token cap | A resident model holds RAM between prompts; concurrent generation and concurrent multi-model residency are deferred |
 
 ## Verified and unverified
 
-- Verified: `docker compose config` and `docker compose --profile serve config --no-interpolate` parse successfully with the provided Docker Compose binary. The no-interpolate form confirms the API command `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, loopback-only host publishing (`host_ip: 127.0.0.1`, `published: "8000"`, `target: 8000`), `env_file` wiring for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`.
+- Verified: `docker compose config` and `docker compose --profile serve config --no-interpolate` parse successfully with the provided Docker Compose binary. The no-interpolate form confirms the API command `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000`, loopback-only host publishing (`host_ip: 127.0.0.1`, `published: "8000"`, `target: 8000`), optional `env_file` wiring (`required: false`) for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`.
 - Verified: the production ASGI entry point `local_llm.api:app` is exposed as `app = build_app()` in `local_llm/api.py`; `local_llm/composition.py` uses FastAPI lifespan startup wiring and no deprecated `on_event` hook.
-- Verified: the Miniconda test image builds and the final `docker compose run --rm tests` passes all 110 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests, including idle retention and capture of the model output for `what is your name, respond using minimal tokens?`.
+- Verified: the Miniconda test image builds and the current `docker compose run --rm tests` passes all 136 response-cache, config-loader, model-registry, Hugging Face CLI downloader, resource-preflight, runtime, streaming-assembly, error-mapping, chat-route, admin-route, composition, OpenCode-config, and container-environment tests with and without `private.txt`, including idle retention, native streaming, optional-token boundaries, and capture of the model output for `what is your name, respond using minimal tokens?`.
 - Verified: `docker compose --profile serve up -d api` started the API container with placeholder GGUF files; `/health` returned `{"status":"ok"}` from inside the container and logs showed per-model download-skip status.
 - Verified: `git check-ignore -v private.txt models/ .cache/responses/` reports `.gitignore:5:private.txt`, `.gitignore:2:models/`, and `.gitignore:3:.cache/`; `.dockerignore` also excludes `private.txt` from the image build context.
 - Superseded: earlier host-conda cache test results and the Docker daemon HTTP 500 failure are no longer the latest evidence.
 - Verified: a token-authenticated real-model smoke test passed inside Docker with `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`). The API container reported `HF_TOKEN configured: True` and `hf download` restored the GGUF without the unauthenticated warning. From host loopback, `/health`, `/v1/models`, and the chat endpoint returned `200`; the prompt `what is your name, respond using minimal tokens?` produced `I am Qwen.`. A repeat replayed the cached response, admin unload returned `200`, admin delete returned `204`, and weights/cache entries were removed afterward.
 - Verified for this change: `DECISION-21` idle retention (`server.idle_unload_seconds` default 180 s, validated `> 0` and `<= 86400` s / 24 h) and its observable criteria `AC-57`–`AC-61` — timer reset on a prompt or cache hit, immediate unload on alias switch / explicit admin unload / runtime or cache-put error, preflight skipped when reusing the loaded alias, and a single resident instance. The idle timer shares the process-wide lock (`server.lock_timeout_seconds: 600`); the OpenCode 96-token cap is unchanged. The final Docker run passed 110 tests, and the three-prompt OpenCode end-to-end smoke confirmed inputs and outputs from the local provider.
 - Contract tests use a fake Hugging Face CLI and a fake Llama runtime. Cache-hit SSE replay reconstructs frames from stored complete responses; cache-miss streaming uses native incremental llama.cpp chunks under `DECISION-23`.
+- Verified for this change: `DECISION-24` optional `HF_TOKEN` (`AC-73`–`AC-76`). Compose config and all 136 Docker tests pass with `private.txt` present and absent; a no-token real-model smoke downloaded the public Qwen GGUF with `HF_TOKEN` absent in dev and API containers, reached `/health`, and returned `I am Qwen.` Loopback publish, `public_only`, fail-closed preflight, token hygiene, and the OpenCode 96-token cap are unchanged.
 - No application components are pending for MVP. C13 and C14 are external boundaries; `ASSUMPTION-16` (committed dependency lock file) remains deferred and non-MVP.
 
 ## Closed implementation assumptions
