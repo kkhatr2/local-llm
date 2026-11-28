@@ -4,7 +4,7 @@ Status: **approved for MVP definition**. CompositionRoot (C1), ConfigLoader (C2)
 
 Source: product-lead interview conducted 2026-11-25, plus follow-up decisions for response caching, llama.cpp defaults, OpenCode options, and Docker-only workflows. All application modules and their tests pass inside the Docker test service, including the production ASGI entry point `local_llm.api:app` (`app = build_app()` in `local_llm/api.py`, built by `local_llm/composition.py` with FastAPI lifespan startup wiring). All future development, testing, deployment, and other execution must occur inside Docker containers only.
 
-Verification evidence: the baseline `docker compose run --rm tests` completed with `Ran 95 tests ... OK` (including composition, OpenCode-config, and container-environment tests, and a prompt-output capture test), and the final run for `DECISION-21` completed with `Ran 110 tests ... OK`; `docker compose --profile serve config --no-interpolate` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), `env_file` wiring for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`; `git check-ignore -v private.txt models/ .cache/responses/` reports all three paths as ignored. The real-model smoke test (criterion 28) **passed inside Docker with token-authenticated downloads** using `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`, file `qwen2.5-coder-0.5b-instruct-q4_k_m.gguf`): the API container reported `HF_TOKEN configured: True`, `hf download` succeeded without the unauthenticated warning, `/health` and `/v1/models` returned `200` from host loopback, and the chat endpoint returned `200` with content `I am Qwen.` for `what is your name, respond using minimal tokens?`. A repeat replayed the cached response; admin unload returned `200` and admin delete returned `204`. The downloaded weights and cache entries were removed after verification. API logs report per-model download status (`downloading model`, `model download complete`, or `model already present; skipping download`); this was verified in the API container. Contract tests still use a fake Hugging Face CLI and a fake Llama runtime. Streaming cache hits are replayed as SSE frames reconstructed from stored complete responses; streaming cache misses use native incremental llama.cpp generation under `DECISION-23`. The post-`DECISION-23` baseline was `Ran 135 tests ... OK`; the current `DECISION-24` run completed with `Ran 136 tests ... OK`, adding native chunk forwarding, completed-response assembly, stream cache interoperability, lock release (including a never-started body), pre-header errors, sanitized mid-stream errors, early-close coverage, and optional-token/Compose-boundary checks on top of download-hardening, idle-retention, and OpenCode-config coverage. Idle retention (`DECISION-21`, `server.idle_unload_seconds` default 180 seconds, validated `> 0` and `<= 86400` / 24 hours) is verified by `AC-57`–`AC-60`. The three-prompt OpenCode end-to-end smoke (`AC-61`) used a fresh standalone session (`ses_local-llm-idle-e2e-20261127-1600`) with the model `local-qwen-coder-05b/chat`: `hi` returned `Hello! How can I assist you today?`; `what is your name?` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.`; `repeat your answer in one short sentence.` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.` All three calls were served by the Docker API over loopback. `DECISION-22` (`AC-62`–`AC-66`) was verified by the DECISION-22-era 136-test Docker run and remains covered by the current 142-test suite: download I/O runs outside the lifecycle lock, same-alias downloads are serialized, startup downloads overlap within the configured bound, preflight failure starts no download command, config boundaries are accepted/rejected, and failed restores leave registry state unchanged. `DECISION-23` (`AC-67`–`AC-72`) was verified by the DECISION-23-era 136-test Docker run and a real-model loopback smoke, and remains covered by the current 142-test suite: a cache-miss divide-function request emitted 27 SSE frames with 24 content deltas and `[DONE]`; the equivalent non-streaming request returned the assembled completion with the same ID/created timestamp, and a repeated streaming request replayed one cached content delta plus `[DONE]`. A forced `curl` disconnect during a separate fresh stream was followed by admin unload returning `{"unloaded":false}` with exit `0`, confirming disconnect cleanup had already closed chunks, unloaded the model, and released the lifecycle lock. `DECISION-24` (`AC-73`–`AC-76`) was verified by the DECISION-24-era 136-test suite run with and without `private.txt`: Compose config and all tests passed in both states, and a no-token real-model smoke downloaded the public Qwen GGUF with `HF_TOKEN` absent in dev and API containers, reached `/health`, and returned `I am Qwen.` for the name prompt. After `DECISION-25`, Compose config and the current 142-test suite were re-run with and without `private.txt`; both passed. `DECISION-25` (`AC-77`–`AC-80`) is verified by a clean no-cache amd64 image build from the committed lock, a byte-for-byte lock regeneration check inside the dev container, and the current `Ran 142 tests ... OK` suite; the final Docker run is documented below.
+Verification evidence: the baseline `docker compose run --rm tests` completed with `Ran 95 tests ... OK` (including composition, OpenCode-config, and container-environment tests, and a prompt-output capture test), and the final run for `DECISION-21` completed with `Ran 110 tests ... OK`; `docker compose --profile serve config --no-interpolate` was verified with the provided Docker Compose binary, confirming the `uvicorn local_llm.api:app --host 0.0.0.0 --port 8000` command, loopback-only host publishing (`127.0.0.1:8000`), `env_file` wiring for `api`/`tests`/`dev`, a read-only config mount, and local model/cache mounts without printing `HF_TOKEN`; `git check-ignore -v private.txt models/ .cache/responses/` reports all three paths as ignored. The real-model smoke test (criterion 28) **passed inside Docker with token-authenticated downloads** using `Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF` (alias `qwen25-coder-05b`, file `qwen2.5-coder-0.5b-instruct-q4_k_m.gguf`): the API container reported `HF_TOKEN configured: True`, `hf download` succeeded without the unauthenticated warning, `/health` and `/v1/models` returned `200` from host loopback, and the chat endpoint returned `200` with content `I am Qwen.` for `what is your name, respond using minimal tokens?`. A repeat replayed the cached response; admin unload returned `200` and admin delete returned `204`. The downloaded weights and cache entries were removed after verification. API logs report per-model download status (`downloading model`, `model download complete`, or `model already present; skipping download`); this was verified in the API container. Contract tests still use a fake Hugging Face CLI and a fake Llama runtime. Streaming cache hits are replayed as SSE frames reconstructed from stored complete responses; streaming cache misses use native incremental llama.cpp generation under `DECISION-23`. The post-`DECISION-23` baseline was `Ran 135 tests ... OK`; the then-current `DECISION-24` run completed with `Ran 136 tests ... OK` (superseded by the current `DECISION-25` gate of `Ran 142 tests ... OK`), adding native chunk forwarding, completed-response assembly, stream cache interoperability, lock release (including a never-started body), pre-header errors, sanitized mid-stream errors, early-close coverage, and optional-token/Compose-boundary checks on top of download-hardening, idle-retention, and OpenCode-config coverage. Idle retention (`DECISION-21`, `server.idle_unload_seconds` default 180 seconds, validated `> 0` and `<= 86400` / 24 hours) is verified by `AC-57`–`AC-60`. The three-prompt OpenCode end-to-end smoke (`AC-61`) used a fresh standalone session (`ses_local-llm-idle-e2e-20261127-1600`) with the model `local-qwen-coder-05b/chat`: `hi` returned `Hello! How can I assist you today?`; `what is your name?` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.`; `repeat your answer in one short sentence.` returned `I am Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF.` All three calls were served by the Docker API over loopback. `DECISION-22` (`AC-62`–`AC-66`) was verified by the DECISION-22-era 136-test Docker run and remains covered by the current 142-test suite: download I/O runs outside the lifecycle lock, same-alias downloads are serialized, startup downloads overlap within the configured bound, preflight failure starts no download command, config boundaries are accepted/rejected, and failed restores leave registry state unchanged. `DECISION-23` (`AC-67`–`AC-72`) was verified by the DECISION-23-era 136-test Docker run and a real-model loopback smoke, and remains covered by the current 142-test suite: a cache-miss divide-function request emitted 27 SSE frames with 24 content deltas and `[DONE]`; the equivalent non-streaming request returned the assembled completion with the same ID/created timestamp, and a repeated streaming request replayed one cached content delta plus `[DONE]`. A forced `curl` disconnect during a separate fresh stream was followed by admin unload returning `{"unloaded":false}` with exit `0`, confirming disconnect cleanup had already closed chunks, unloaded the model, and released the lifecycle lock. `DECISION-24` (`AC-73`–`AC-76`) was verified by the DECISION-24-era 136-test suite run with and without `private.txt`: Compose config and all tests passed in both states, and a no-token real-model smoke downloaded the public Qwen GGUF with `HF_TOKEN` absent in dev and API containers, reached `/health`, and returned `I am Qwen.` for the name prompt. After `DECISION-25`, Compose config and the current 142-test suite were re-run with and without `private.txt`; both passed. `DECISION-25` (`AC-77`–`AC-80`) is verified by a clean no-cache amd64 image build from the committed lock, a byte-for-byte lock regeneration check inside the dev container, and the current `Ran 142 tests ... OK` suite; the final Docker run is documented below.
 
 ## Original request
 
@@ -110,6 +110,7 @@ A localhost-only API that:
 | `DECISION-23` | On a `stream: true` cache miss, generate with llama.cpp `stream=True` and emit each chunk as SSE as it arrives. Hold the lifecycle lock from pre-response setup through iteration; contention before the response still returns `503`. Assemble and cache one completed response only after success. Cache hits keep replaying stored responses; non-streaming behavior is unchanged. A generation/cache error after streaming starts closes the chunk iterator, unloads immediately, emits a sanitized SSE `error` event without `[DONE]`, and never caches partial content. Client disconnect is cleanup-only with no error frame. Usage is included only when supplied by runtime chunks; the installed llama-cpp-python has no `stream_options` parameter. | Client | Closed |
 | `DECISION-24` | Make the untracked `private.txt` → `HF_TOKEN` injection optional for `api`, `tests`, and `dev`. When the file or token is absent, Compose and the service still start and public GGUF downloads proceed unauthenticated. When present, behavior and hygiene are unchanged: the token is never committed, copied into the image, passed as a CLI argument, or logged. Loopback-only publish, fail-closed preflight, `public_only`, the single-model lifecycle, and OpenCode V2/96-token settings remain unchanged. | Client | Closed |
 | `DECISION-25` | Commit a linux-64-only explicit conda lock generated inside Docker from the current `local-llm` environment. The lock records exact package URLs with SHA-256 fragments; the Dockerfile pins the Miniconda base image by immutable digest, creates the environment from the lock, and removes the floating `pip install --upgrade pip`. `environment.yaml` remains the human-edited source of truth. Multi-architecture locks are deferred; the client confirmed linux-64 only. Runtime behavior, loopback-only publish, optional `HF_TOKEN`, and OpenCode V2/96-token settings are unchanged. | Tech Lead + Client | Closed |
+| `DECISION-26` | Phase 2 is planned but not implemented. Primary cloud target is provider-neutral Kubernetes with public TLS ingress and gateway-enforced API-key authentication; local Compose stays loopback-only. Active compute backends are NVIDIA CUDA (local and cloud) and CPU; Apple Metal local support is documentation-only until a native verification exception is approved. GPU preflight fails closed unless CPU fallback is explicitly configured. Model supply is HF CLI download into a volume plus optional object-storage sync; cache and model residency stay per instance. Cloud pods use K8s Secret primitives, non-root users, and read-only root filesystems. Delivery uses digest-promoted OCI artifacts (one digest per CPU/CUDA flavor) with a Helm chart and an AWS-first Terraform reference module. Rate limiting, cache encryption, application-level auth, shared cache, multi-architecture locks, and content-hash GGUF fingerprints remain deferred. | Client + Tech Lead + Security Engineer + Delivery Manager | Closed for planning |
 
 ## MVP must-haves
 
@@ -193,6 +194,128 @@ Cross-cutting gate: `AC-56` verifies the baseline, tests, Compose config, and ig
 Follow-up hardening after the security report: `DECISION-22` closes `SEC-G-01` by keeping network/download I/O outside the lifecycle lock and by parallelizing startup downloads with a bounded worker count. This does not add concurrent generation, multi-model residency, admin gating, or a second resident GGUF. Its gates are `AC-62`–`AC-66`.
 
 Reproducible dependency hardening after `DECISION-24`: `DECISION-25` commits a linux-64 SHA-256 explicit lock, pins the linux/amd64 Miniconda manifest by digest, makes every Compose service target `linux/amd64`, and removes the floating pip upgrade. It is a C11 build-boundary change only; application modules, runtime behavior, loopback exposure, and `ASSUMPTION-17` are unchanged. Its gates are `AC-77`–`AC-80`.
+
+## Phase 2: cloud and accelerated compute (planned)
+
+Status: **planned; not implemented**. `DECISION-26` records the product decisions collected on 2026-11-27. MVP contracts, `AC-1`–`AC-80`, loopback-only Compose publish, the 142-test Docker gate, and the open state of `ASSUMPTION-17` remain unchanged until Phase 2 is explicitly approved for implementation. This section is the product scope; `docs/planning/phase2-kubernetes-primary.md` is the supporting tech-lead recommendation.
+
+### Client request and decisions
+
+> Consult with leads on how to make this application deployable on any cloud infrastructure in the most secure and repeatable way. Ask questions for additional requirements and document this as phase 2. The software has to be deployable on a local computer and cloud. Add configuration changes to use local and cloud GPU in addition to CPU for compute.
+
+| Topic | Decision | Consequence |
+| --- | --- | --- |
+| Cloud target | Provider-neutral Kubernetes first; AWS EKS is the first concrete Terraform reference. | One CPU/CUDA OCI artifact set and Helm chart work across clouds; Terraform is provider-specific only at the adapter layer. |
+| Cloud ingress | Public ingress with TLS and API-key policy at the gateway. | The application stays auth-less; the gateway is the trust boundary; admin routes are internal-only. |
+| Local deployment | Keep Compose on `127.0.0.1:8000`. | Local loopback behavior and OpenCode V2/96-token settings are unchanged. |
+| Compute | NVIDIA CUDA for local and cloud GPU; explicit CPU selection remains available. Apple Metal is local documentation-only for now. | No Metal cloud image and no Docker/CI Metal verification claim in Phase 2. |
+| GPU failure policy | Fail closed when a requested GPU backend is missing or under-provisioned; CPU fallback only when explicitly configured. | A GPU request never silently degrades to CPU. |
+| Model supply | HF CLI download into a volume plus optional object-storage sync. | Weights are never baked into an image; object-store credentials are injected, not configured in YAML. |
+| Cache and residency | Per-instance local cache and one resident model per process/pod. | No shared cache across replicas; repeated calls can cold-load on a different pod. |
+| Secrets | K8s Secret primitives first; `HF_TOKEN` remains optional. | No secret values in `local_llm.yaml`, image layers, CLI arguments, logs, or shared manifest output. |
+| Container hardening | Non-root user and read-only root filesystem for cloud pods. | Local Compose keeps current ownership behavior because Windows bind-mount UID/GID mapping is unresolved. |
+| Repeatability | OCI artifacts promoted by digest, Helm chart, and Terraform/IaC modules. | One digest is promoted per CPU/CUDA flavor; Compose and Helm reference the same digest for the selected flavor; builds stay inside Docker. |
+| Rate limiting | Deferred, with residual lock-exhaustion and download-abuse risk accepted in writing. | API-key authentication is not abuse control; `ASSUMPTION-17` remains open. |
+
+### Lead consultation summary
+
+- **Tech Lead:** feasible and bounded. Additive configuration plus new backend-selection and model-sync modules behind injected contracts; one digest-promoted OCI artifact per CPU/CUDA flavor shared by Compose and Helm; no current `local_llm.yaml` key, route contract, or MVP behavior changes. Risks: per-instance residency causes cold loads across replicas, Metal is not a Linux container target, and synced weights must be treated as immutable until content-hash fingerprints are adopted.
+- **Security Engineer:** ready to document, not ready for implementation sign-off without explicit gates. Gateway owns API-key validation and TLS; `/health` and per-alias chat may be public, `/admin/models*` must not be; NetworkPolicy prevents direct pod access; cloud pods use `runAsNonRoot`, `readOnlyRootFilesystem`, dropped capabilities, and `RuntimeDefault` seccomp; secrets come from K8s Secrets/workload identity; rate limiting and cache encryption stay open and `ASSUMPTION-17` is not closed.
+- **Delivery Manager:** high feasibility with zero expected MVP test breakage. Recommended dependency order is documentation gates → OCI/non-root image → gateway and secrets → compute/object-storage modules → CUDA path → Helm and AWS Terraform artifacts. Each phase has its own Docker verification gate.
+
+### Proposed configuration changes
+
+These fields are **not applied to the repository**. They define the Phase 2 configuration contract and are owned by `ConfigLoader` (C2). Existing keys in `local_llm.yaml` remain unchanged, and OpenCode still uses only `limit` singular and `body.options` under V2.
+
+```yaml
+# --- existing server/paths/llama_defaults/generation_defaults/max_n_ctx/cache/download/resources/models keys unchanged ---
+
+deployment:
+  primary_target: kubernetes        # kubernetes | compose
+  local_mode: true                 # preserves Compose loopback behavior
+  terraform_reference: aws         # AWS EKS first; other providers are adapters
+  ingress:
+    enabled: false                 # enabled by Helm values, never by local Compose
+    gateway_policy: api_key        # enforced outside the application
+    api_key_secret_ref: local-llm-api-key
+    publish: loopback              # local Compose: loopback; Helm: public via ingress
+
+compute:
+  default_backend: cpu
+  active_backends: [cpu, cuda]     # Metal is documentation-only in Phase 2
+  documented_backends: [metal]
+  device_placement: auto           # auto | manual
+  fallback: fail_closed            # CPU fallback requires explicit opt-in
+  backend_defaults:
+    cpu:
+      n_gpu_layers: 0
+    cuda:
+      n_gpu_layers: 33
+    metal:
+      n_gpu_layers: 1              # documented reference only
+
+registry:
+  supply: hf                       # hf | object_storage | volume
+  object_storage:
+    provider: s3
+    bucket: local-llm-models
+    prefix: gguf/
+    region: us-east-1
+    secret_ref: model-supply-credentials
+  sync:
+    enabled: false
+    immutable_weights: true
+    concurrency: 4
+
+cache:
+  scope: per_instance              # new; existing dir/ttl_days/max_size_mb/replay_sse unchanged
+
+security:
+  non_root: true                   # cloud target only
+  read_only_root: true             # cloud target only
+  secrets_backend: kubernetes_secret
+```
+
+Validation rules: `deployment.ingress.gateway_policy` must be `api_key`; `primary_target` is `kubernetes` or `compose`; `compute.active_backends` is a non-empty subset of `cpu`/`cuda`; `metal` is accepted only in `documented_backends`; `compute.fallback` is `fail_closed` in Phase 2; `registry.supply` is `hf`, `object_storage`, or `volume`; `secret_ref` is non-empty when ingress or object storage is enabled; `cache.scope` is `per_instance`; and `security.secrets_backend` is `kubernetes_secret`. Startup failures name the offending field. Effective llama options keep the current merge order with backend defaults inserted once: `llama_defaults` → `compute.backend_defaults[selected_backend]` → model `options` → request `options`.
+
+### Module boundaries
+
+| Area | Owner | Contract | Injected edge |
+| --- | --- | --- | --- |
+| New deployment/compute/registry/security settings | C2 `ConfigLoader` | Immutable `Settings` sections with field-named validation errors | YAML reader and env |
+| Backend selection and placement | New backend selector/device-placement modules | `select(settings, probes)` and `validate(backend, resources)`; one decision per load | Fake GPU/Metal/CPU probes and resource thresholds |
+| Runtime adapter | C6 `LlamaRuntimeAdapter` | Backend-specific `n_gpu_layers` and llama options; still one resident instance per process | Injected llama runtime and GGUF path |
+| Model supply | C4 downloader plus new object-storage sync | Dispatch `hf`/`object_storage`/`volume`; sync outside the lifecycle lock | Injected CLI runner, HTTP client, credentials, paths |
+| Cache | C9 `ResponseCache` | Per-instance directory from an injected instance id; TTL/LRU/replay semantics unchanged | Injected clock and filesystem |
+| Composition | C1 `CompositionRoot` | Single acyclic constructor graph for all concrete implementations | All collaborators |
+
+HTTP handlers remain thin. Application code never validates API keys, calls a secrets manager, or performs object-storage I/O directly; gateway, K8s Secrets, and init-containers own those edges.
+
+### Deployment topology
+
+- Local: unchanged Compose service, `0.0.0.0:8000` inside the container, `127.0.0.1:8000` on the host, optional `private.txt`, model and cache bind mounts.
+- Cloud: public TLS gateway enforces API key → internal ClusterIP Service → API pod. `/health` and per-alias chat are the only public paths; `/v1/models` and `/admin/models*` remain internal. NetworkPolicy blocks direct pod access.
+- Pod: non-root UID, read-only root filesystem, dropped capabilities, RuntimeDefault seccomp, writable `emptyDir`/PVC mounts only at `models`, `.cache`, and `/tmp`; config mounted read-only from `local_llm.yaml`.
+- GPU: NVIDIA device plugin via `nvidia.com/gpu` only; no privileged containers or raw host-device passthrough. CPU nodes are an explicitly selectable profile; there is no silent CUDA-to-CPU fallback.
+- Supply: one CPU image digest and one CUDA image digest are promoted; Compose and Helm reference the same digest for the selected flavor. Weights and cache are volumes, never image layers.
+- IaC: AWS EKS reference module provisions CPU/GPU node groups, S3 weights bucket, K8s Secrets/secret references, ingress, and network policies; GKE/AKS remain provider-neutral adapters for later phases.
+
+### Phase 2 assumptions and residual decisions
+
+| ID | Assumption | Owner | Required decision |
+| --- | --- | --- | --- |
+| `ASSUMPTION-18` | Per-instance residency and cache mean a later request may land on a different pod and cold-load or miss cache. | Product Lead + Delivery Manager | Open: decide whether sticky alias affinity or warm-up is required before public launch. |
+| `ASSUMPTION-19` | Object-storage-supplied weights are immutable after first sync; cache fingerprint stays `size:mtime_ns`. | Tech Lead + Security Engineer | Open: decide whether content-hash fingerprints or versioned aliases are needed if weights can be replaced. |
+| `ASSUMPTION-20` | AWS EKS is the first Terraform reference implementation; GKE/AKS are later adapters. | Client + Platform | Closed for Phase 2 planning by `DECISION-26`; cluster-specific values still required. |
+| `ASSUMPTION-21` | Rate limiting and abuse controls are deferred; a valid API key can still exhaust the lifecycle lock or trigger download abuse. | Product Lead + Security Engineer | Open: residual risk accepted for planning; revisit before public launch. Gateway-side limits are preferred if added. |
+| `ASSUMPTION-22` | Local Compose non-root is deferred because Windows bind-mount UID/GID ownership is unresolved; only cloud pods use non-root/read-only. | Product Lead + Tech Lead | Closed for Phase 2 planning by `DECISION-26`; local behavior unchanged. |
+| `ASSUMPTION-23` | Apple Metal is documentation-only in Phase 2; no Docker/CI verification claim is made. | Client + Tech Lead | Closed for Phase 2 planning by `DECISION-26`; reopen if a macOS-native verification exception is approved. |
+
+### Deferred and rejected in Phase 2
+
+Deferred: application-level auth and rate limiting, cache encryption and shorter TTL, shared/distributed cache, content-hash GGUF fingerprints, local Compose non-root, Metal implementation and verification, AMD ROCm, cloud-managed inference endpoints, concurrent generation, multi-model residency, async download queue, admin alias gating, gated/private HF repos, and multi-architecture locks.
+
+Rejected for Phase 2: baking weights into images, public unauthenticated cloud exposure, direct pod exposure, a Metal cloud container image, silent GPU-to-CPU fallback, and secret values in YAML, images, CLI arguments, or logs.
 
 ## Configuration recommendation
 
@@ -518,7 +641,7 @@ These product-level assumptions were closed by the tech lead. The concrete decis
 | `ASSUMPTION-14` | The installed `llama-cpp-python` version supports `flash_attn`. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-15` | OpenCode sends runtime llama options through `body.options`. | Tech Lead | Closed; see `docs/architecture.md`. |
 | `ASSUMPTION-16` | Miniconda base image plus `environment.yaml` is sufficient until a committed lock file is generated. | Tech Lead + Delivery Manager | Closed; see `docs/architecture.md`. |
-| `ASSUMPTION-17` | For the top-seven hardening plan, loopback-only exposure, token hygiene, cache-retention guidance, and Docker-only execution are sufficient cybersecurity mitigations for a trusted single-user host. | Product Lead + Security Engineer | **Open:** if the host is shared or remotely reachable, auth/rate limiting, non-root container, and cache encryption become required follow-up scope. |
+| `ASSUMPTION-17` | For the top-seven hardening plan, loopback-only exposure, token hygiene, cache-retention guidance, and Docker-only execution are sufficient cybersecurity mitigations for a trusted single-user host. | Product Lead + Security Engineer | **Open:** `DECISION-26` changes the Phase 2 context to a public API. Gateway API-key auth and cloud non-root/read-only are explicit Phase 2 choices, but rate limiting, cache encryption, application-level auth, and local Compose non-root remain open; the local MVP trust boundary is unchanged. |
 
 ## Acceptance criteria
 
@@ -622,6 +745,96 @@ The following criteria document the reproducible dependency lock (`DECISION-25`)
 
 `DECISION-25` verification: `docker buildx imagetools inspect continuumio/miniconda3:24.9.2-0@sha256:39b820af05f0f9bb986ca145a0d077bbd3bd866256277dd869fefb93bd03cd21` identifies the pinned manifest as `linux/amd64`; `docker compose build --no-cache api tests dev` succeeded from that digest using only `environment-linux-64.lock`; `conda list -n local-llm --explicit --sha256` in the rebuilt dev container reproduced the committed lock byte-for-byte; and the final `docker compose run --rm tests` run completed with `Ran 142 tests ... OK`. Compose config remains loopback-only with optional token injection.
 
+The following criteria define the planned Phase 2 scope (`DECISION-26`). They are **not implemented or verified**; each becomes a gate when its owning module is built.
+
+81. **[phase2/config]** `ConfigLoader` accepts the new `deployment`, `compute`, `registry`, `cache.scope`, and `security` sections without error.
+82. **[phase2/config]** An unknown `compute.active_backends` value fails startup with the field name in the error.
+83. **[phase2/config]** An unknown `registry.supply` value fails startup with the field name in the error.
+84. **[phase2/config]** A `compute.fallback` value other than `fail_closed` fails startup with the field name in the error.
+85. **[phase2/config]** A config valid under `AC-1`–`AC-80` still validates unchanged.
+86. **[phase2/compute]** With a CUDA probe reporting availability, backend selection returns `cuda`.
+87. **[phase2/compute]** With no CUDA and `fallback: fail_closed`, load preflight returns `503` naming the requested backend.
+88. **[phase2/compute]** With `default_backend: cpu`, the runtime receives `n_gpu_layers: 0`.
+89. **[phase2/compute]** CUDA placement applies `compute.backend_defaults.cuda.n_gpu_layers` to the runtime.
+90. **[phase2/compute]** GPU memory preflight rejects a CUDA load when estimated VRAM exceeds the configured limit.
+91. **[phase2/runtime]** One resident model per process remains after backend selection is added.
+92. **[phase2/cache]** The cache directory is derived from the injected instance id.
+93. **[phase2/cache]** Two injected instances do not share cache entries.
+94. **[phase2/model-supply]** With `registry.supply: object_storage` and an empty `models/<alias>/`, sync fetches the GGUF before load.
+95. **[phase2/model-supply]** A sync failure writes no partial weights.
+96. **[phase2/model-supply]** A sync or download operation does not hold the lifecycle lock.
+97. **[phase2/model-supply]** With `registry.supply: hf`, startup download behavior from `AC-4` and `AC-5` is unchanged.
+98. **[phase2/model-supply]** With `registry.supply: hf`, admin download behavior from `AC-62`–`AC-66` is unchanged.
+99. **[phase2/image]** The CPU image builds inside Docker from the digest-pinned base and committed linux-64 lock.
+100. **[phase2/image]** The CUDA image builds inside Docker from a digest-pinned base and its own generated lock.
+101. **[phase2/image]** No model weights are copied into an image.
+102. **[phase2/image]** No token value is copied into an image.
+103. **[phase2/image]** No cache file is copied into an image.
+104. **[phase2/deployment]** Compose and Helm reference the same digest for the selected image flavor.
+105. **[phase2/deployment]** Compose still publishes only `127.0.0.1:8000`.
+106. **[phase2/deployment]** Helm renders a public ingress only when explicitly enabled.
+107. **[phase2/ingress]** The gateway returns `401` for a missing API key before forwarding.
+108. **[phase2/ingress]** The gateway returns `401` for an invalid API key before forwarding.
+109. **[phase2/ingress]** The application receives no API key value.
+110. **[phase2/ingress]** Public ingress exposes `/health`.
+111. **[phase2/ingress]** Public ingress exposes per-alias chat.
+112. **[phase2/ingress]** Public ingress does not expose `/v1/models`.
+113. **[phase2/ingress]** Public ingress does not expose `/admin/models*`.
+114. **[phase2/ingress]** A direct pod request bypassing the gateway is denied.
+115. **[phase2/tls]** The public endpoint serves TLS 1.2 or higher.
+116. **[phase2/tls]** HTTP requests to the public endpoint redirect to HTTPS.
+117. **[phase2/security]** The cloud pod spec sets `runAsNonRoot: true`.
+118. **[phase2/security]** The cloud pod spec sets `readOnlyRootFilesystem: true`.
+119. **[phase2/security]** The cloud pod spec sets `allowPrivilegeEscalation: false`.
+120. **[phase2/security]** The cloud pod spec drops all capabilities.
+121. **[phase2/security]** The cloud pod spec uses the RuntimeDefault seccomp profile.
+122. **[phase2/security]** Writable mounts are limited to the model, cache, and `/tmp` paths.
+123. **[phase2/secrets]** `HF_TOKEN` originates from a K8s Secret.
+124. **[phase2/secrets]** API-key secret references originate from a K8s Secret.
+125. **[phase2/secrets]** Object-store credentials originate from a K8s Secret or workload identity.
+126. **[phase2/secrets]** No secret value appears in `local_llm.yaml`.
+127. **[phase2/secrets]** No secret value appears in an image layer.
+128. **[phase2/secrets]** No secret value appears in a CLI argument.
+129. **[phase2/secrets]** No secret value appears in application logs.
+130. **[phase2/secrets]** No secret value appears in shared manifest output.
+131. **[phase2/helm]** `helm template` renders without errors.
+132. **[phase2/helm]** `helm install --dry-run` renders without errors.
+133. **[phase2/helm]** Rendered config values come from `local_llm.yaml`.
+134. **[phase2/terraform]** `terraform plan` provisions an EKS CPU node group.
+135. **[phase2/terraform]** `terraform plan` provisions an EKS GPU node group.
+136. **[phase2/terraform]** `terraform plan` provisions an S3 weights bucket.
+137. **[phase2/terraform]** `terraform plan` provisions ingress.
+138. **[phase2/terraform]** `terraform plan` provisions network policies.
+139. **[phase2/terraform]** Provider versions are pinned.
+140. **[phase2/terraform]** Module versions are pinned.
+141. **[phase2/terraform]** A repeated `terraform plan` is empty.
+142. **[phase2/supply-chain]** Helm references images by digest only.
+143. **[phase2/supply-chain]** Terraform references images by digest only.
+144. **[phase2/supply-chain]** Image signature verification passes before promotion.
+145. **[phase2/supply-chain]** An SBOM is archived for each promoted digest.
+146. **[phase2/supply-chain]** The vulnerability scan gate passes for each promoted digest.
+147. **[phase2/observability]** Application logs contain no token value.
+148. **[phase2/observability]** Application logs contain no prompt text.
+149. **[phase2/observability]** Application logs contain no filesystem path.
+150. **[phase2/observability]** Application logs contain no stack trace.
+151. **[phase2/observability]** Gateway audit records a masked API-key identity.
+152. **[phase2/observability]** Gateway audit records the alias.
+153. **[phase2/observability]** Gateway audit records the status.
+154. **[phase2/observability]** Gateway audit records the request ID.
+155. **[phase2/decision]** Rate limiting deferral is documented.
+156. **[phase2/decision]** Lock-exhaustion residual risk is accepted in writing.
+157. **[phase2/decision]** `ASSUMPTION-17` remains open.
+158. **[phase2/decision]** `ASSUMPTION-18` remains open.
+159. **[phase2/decision]** `ASSUMPTION-19` remains open.
+160. **[phase2/decision]** `ASSUMPTION-21` remains open.
+161. **[phase2/verification]** The full 142-test MVP suite passes inside Docker.
+162. **[phase2/verification]** New Phase 2 tests pass inside Docker.
+163. **[phase2/verification]** `git check-ignore -v private.txt models/ .cache/responses/` passes.
+164. **[phase2/verification]** No model weights are staged.
+165. **[phase2/verification]** No cache files are staged.
+166. **[phase2/documentation]** Apple Metal is recorded as documentation-only.
+167. **[phase2/documentation]** No Docker or CI Metal verification claim is made.
+
 ## Delivery sequence
 
 1. Add `models/` and `.cache/` to `.gitignore`.
@@ -637,6 +850,21 @@ The following criteria document the reproducible dependency lock (`DECISION-25`)
 11. Add error envelope, host loopback Docker publishing, and cache/runtime tests.
 12. Write README and OpenCode configuration example using `limit` and `body.options`.
 
+### Phase 2 delivery order
+
+Each Phase 2 step waits for the previous step's observable gates; none changes MVP behavior.
+
+1. P2-0: approve Phase 2 implementation, record `ASSUMPTION-18`–`ASSUMPTION-23`, and satisfy the decision/documentation gates (`AC-155`–`AC-160`, `AC-166`–`AC-167`).
+2. P2-1: add config sections and validation (`AC-81`–`AC-85`).
+3. P2-2: add backend selection and fail-closed GPU preflight (`AC-86`–`AC-90`).
+4. P2-3: preserve runtime residency and add per-instance cache isolation (`AC-91`–`AC-93`).
+5. P2-4: add model-supply dispatch and object-storage sync (`AC-94`–`AC-98`).
+6. P2-5: build CPU/CUDA images and cloud pod hardening (`AC-99`–`AC-103`, `AC-117`–`AC-122`).
+7. P2-6: add gateway TLS/API-key ingress and internal-only admin exposure (`AC-104`–`AC-116`).
+8. P2-7: add the K8s Secret/workload-identity flow (`AC-123`–`AC-130`).
+9. P2-8: ship the Helm chart and AWS Terraform reference module (`AC-131`–`AC-141`).
+10. P2-9: pass supply-chain, observability, and verification gates (`AC-142`–`AC-154`, `AC-161`–`AC-165`).
+
 ## Next step
 
-MVP implementation is complete, including the C1 production composition root and ASGI entry point; `ASSUMPTION-1` through `ASSUMPTION-16` are closed and recorded in `docs/architecture.md`. `DECISION-21` adds idle retention for the lazily loaded GGUF (`server.idle_unload_seconds` defaults to 180 seconds and is validated `> 0` and `<= 86400` / 24 hours); its observable behavior is recorded in `AC-19`, `AC-20`, and `AC-57`–`AC-61`, all verified by the final Docker test run and the three-prompt OpenCode smoke. The top-seven hardening plan is otherwise documentation/verification-only through `AC-49`–`AC-56`; `DECISION-22` covers download hardening, `DECISION-23` adds true incremental streaming on cache misses with completed-response caching and sanitized stream-error cleanup, and `DECISION-24` makes `HF_TOKEN` optional without weakening token hygiene; `DECISION-25` commits a linux-64 explicit dependency lock and digest-pins the Miniconda base image. `ASSUMPTION-17` remains open and must be confirmed before adding auth, rate limiting, non-root container, or cache-encryption scope. All verification after this point must be executed inside Docker containers.
+MVP implementation is complete, including the C1 production composition root and ASGI entry point; `ASSUMPTION-1` through `ASSUMPTION-16` are closed and recorded in `docs/architecture.md`. `DECISION-21` adds idle retention for the lazily loaded GGUF (`server.idle_unload_seconds` defaults to 180 seconds and is validated `> 0` and `<= 86400` / 24 hours); its observable behavior is recorded in `AC-19`, `AC-20`, and `AC-57`–`AC-61`, all verified by the final Docker test run and the three-prompt OpenCode smoke. The top-seven hardening plan is otherwise documentation/verification-only through `AC-49`–`AC-56`; `DECISION-22` covers download hardening, `DECISION-23` adds true incremental streaming on cache misses with completed-response caching and sanitized stream-error cleanup, and `DECISION-24` makes `HF_TOKEN` optional without weakening token hygiene; `DECISION-25` commits a linux-64 explicit dependency lock and digest-pins the Miniconda base image. `ASSUMPTION-17` remains open and must be confirmed before adding local auth, local rate limiting, local non-root container, or cache-encryption scope. `DECISION-26` records Phase 2 planning only: provider-neutral Kubernetes, gateway API-key ingress, CUDA/CPU backends, object-storage sync, K8s Secrets, non-root cloud pods, and Helm/AWS Terraform artifacts are defined by `AC-81`–`AC-167` but are not implemented. No production code or `local_llm.yaml` changes were made for Phase 2 planning. All verification after this point must be executed inside Docker containers.

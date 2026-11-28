@@ -189,6 +189,10 @@ To make a local model the default, change the root `"model"` value in `opencode.
 
 After editing OpenCode configuration, use `/reload` if the change is not picked up automatically.
 
+## Roadmap
+
+Phase 2 is **planned, not implemented**. Scope and gates are in `docs/requirements.md` (`DECISION-26`, `AC-81`–`AC-167`); the tech-lead recommendation is in `docs/planning/phase2-kubernetes-primary.md`. It covers provider-neutral Kubernetes, TLS gateway API-key ingress, CUDA plus CPU backends, object-storage sync, K8s Secrets, non-root/read-only cloud pods, a Helm chart, and an AWS-first Terraform reference module. Apple Metal is documentation-only for now. Local Compose stays loopback-only and the current commands below are unchanged.
+
 ## Verification evidence
 
 - The final `docker compose run --rm tests` run passed all 142 cache, config, registry, downloader, resource-preflight, runtime, streaming-assembly, error-mapping, chat-route, admin-route, composition, alias-download-lock, dependency-lock, OpenCode-config, and container-environment tests inside the Miniconda container (`Ran 142 tests ... OK`). The dependency-lock cases were also verified after a clean no-cache amd64 rebuild, together with a byte-for-byte lock regeneration check. Idle retention (`DECISION-21`, `AC-57`–`AC-60`), download hardening (`DECISION-22`, `AC-62`–`AC-66`), streaming (`DECISION-23`, `AC-67`–`AC-72`), optional `HF_TOKEN` (`DECISION-24`, `AC-73`–`AC-76`), and the reproducible linux-64 lock (`DECISION-25`, `AC-77`–`AC-80`) are verified.

@@ -330,6 +330,28 @@ flowchart TB
     TokenFile --> Container
 ```
 
+## Phase 2 planned deployment view (not implemented)
+
+`DECISION-26` is a planning decision only. The MVP deployment above remains the implemented topology; the diagram below is the proposed cloud topology for `AC-81`–`AC-167`.
+
+```mermaid
+flowchart TB
+    Client["Public client"] --> Gateway["TLS ingress: gateway API-key policy"]
+    Gateway --> Service["Internal ClusterIP service"]
+    Service --> Pod["API pod: non-root, read-only root, dropped capabilities"]
+    Pod --> Config[("ConfigMap from local_llm.yaml")]
+    Pod --> Secrets[("K8s Secrets: HF_TOKEN, API key ref, object-store creds")]
+    Pod --> Models[("models volume")]
+    Pod --> Cache[("per-instance .cache volume")]
+    Pod --> GPU["nvidia.com/gpu device plugin (CUDA only)"]
+    Sync["initContainer: object-storage sync"] --> Models
+    Helm["Helm chart"] --> Service
+    TF["Terraform AWS module"] --> Gateway
+    Compose["Local Compose (unchanged)"] --> Local["127.0.0.1:8000"]
+```
+
+Planned boundaries: public ingress exposes only `/health` and per-alias chat; `/v1/models` and `/admin/models*` stay internal; NetworkPolicy denies direct pod access. The application has no auth, no secrets-manager client, and no object-storage client in its own module graph. Backend selection inserts `compute.backend_defaults` between `llama_defaults` and model/request options, and `compute.fallback: fail_closed` prevents silent CUDA-to-CPU degradation. The selected CPU or CUDA flavor digest is referenced by both Compose and Helm; weights and cache remain volumes and are never image layers. Apple Metal is documentation-only, not a Linux container or cloud target.
+
 ## Dependency rules
 
 - `CompositionRoot` is the only component that constructs concrete implementations.
@@ -375,6 +397,7 @@ The baseline for this plan was pushed to `origin/main` as `3d7e43a` before any p
 - Contract tests use a fake Hugging Face CLI and a fake Llama runtime. Cache-hit SSE replay reconstructs frames from stored complete responses; cache-miss streaming uses native incremental llama.cpp chunks under `DECISION-23`.
 - Verified for this change: `DECISION-24` optional `HF_TOKEN` (`AC-73`–`AC-76`). Compose config and the then-current 136 Docker tests passed with `private.txt` present and absent; the current 142-test `DECISION-25` suite was re-run in both token states and passed. A no-token real-model smoke downloaded the public Qwen GGUF with `HF_TOKEN` absent in dev and API containers, reached `/health`, and returned `I am Qwen.` Loopback publish, `public_only`, fail-closed preflight, token hygiene, and the OpenCode 96-token cap are unchanged.
 - Verified for this change: `DECISION-25` reproducible dependencies (`AC-77`–`AC-80`). `docker buildx imagetools inspect` identified the digest-pinned base as `linux/amd64`; a clean no-cache amd64 image build installed only from the committed linux-64 SHA-256 lock; the regenerated lock matched byte-for-byte; all 142 Docker tests pass; Compose config remains loopback-only with optional token injection. No application module, route contract, runtime behavior, or `ASSUMPTION-17` decision changed.
+- Planned only: `DECISION-26` Phase 2 (`AC-81`–`AC-167`) adds Kubernetes, gateway API-key ingress, CUDA/CPU backend selection, object-storage sync, K8s Secrets, non-root/read-only cloud pods, Helm, and an AWS Terraform reference module. No Phase 2 application module, configuration field, image, chart, or IaC artifact is implemented or verified; the MVP deployment and the 142-test gate remain current.
 - No application components are pending for MVP. C13 and C14 are external boundaries; `ASSUMPTION-16` is implemented by `DECISION-25` as a linux-64-only explicit dependency lock, with multi-architecture locks deferred and non-MVP.
 
 ## Closed implementation assumptions
@@ -404,5 +427,5 @@ The tech lead closed `ASSUMPTION-1` through `ASSUMPTION-16`. Closing a decision 
 
 | ID | Open assumption | Owner | Required decision |
 | --- | --- | --- | --- |
-| `ASSUMPTION-17` | Loopback-only exposure, token hygiene, cache-retention guidance, and Docker-only execution are sufficient cybersecurity mitigations for a trusted single-user host. | Product Lead + Security Engineer | Confirm the host is trusted and single-user. If shared or remotely reachable, add auth/rate limiting, non-root container, and cache encryption as follow-up scope before implementation. |
+| `ASSUMPTION-17` | Loopback-only exposure, token hygiene, cache-retention guidance, and Docker-only execution are sufficient cybersecurity mitigations for a trusted single-user host. | Product Lead + Security Engineer | **Still open.** `DECISION-26` records Phase 2 gateway API-key auth and cloud non-root/read-only as explicit product choices, but rate limiting, cache encryption, application-level auth, and local Compose non-root remain undecided. Confirm the local host is trusted; do not treat the Phase 2 plan as closure of this assumption. |
 

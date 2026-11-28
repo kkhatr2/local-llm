@@ -1,6 +1,6 @@
 # Security report and mitigation plan
 
-Status: **living draft — not approved as final**. `ASSUMPTION-17` remains open by product decision on 2026-11-27: the loopback-only trust boundary is treated as sufficient for a trusted single-user host, but the report must not silently close auth/rate limiting, non-root container, or cache encryption.
+Status: **living draft — not approved as final**. `ASSUMPTION-17` remains open by product decision on 2026-11-27: the loopback-only trust boundary is treated as sufficient for a trusted single-user host, but the report must not silently close auth/rate limiting, non-root container, or cache encryption. `DECISION-26` adds Phase 2 planning for gateway API-key auth and cloud non-root/read-only pods; rate limiting and cache encryption remain open and no Phase 2 control is implemented.
 
 Last reviewed: **2026-11-27**
 
@@ -53,7 +53,7 @@ Actual implementation of any mitigation, replacement of the loopback trust model
 
 | ID | Assumption or decision | Owner | Status | Required decision |
 | --- | --- | --- | --- | --- |
-| `ASSUMPTION-17` | Loopback-only exposure, token hygiene, cache-retention guidance, and Docker-only execution are sufficient for a trusted single-user host. | Product Lead + Security Engineer | **Open** — user chose “keep open” on 2026-11-27 | Confirm whether any other local user/process can reach `127.0.0.1:8000`. If yes, open scope for auth, rate limiting, non-root container, and cache encryption. |
+| `ASSUMPTION-17` | Loopback-only exposure, token hygiene, cache-retention guidance, and Docker-only execution are sufficient for a trusted single-user host. | Product Lead + Security Engineer | **Open** — user chose “keep open” on 2026-11-27; Phase 2 context updated by `DECISION-26` | Confirm whether any other local user/process can reach `127.0.0.1:8000`. For Phase 2 public exposure, gateway API-key auth and cloud non-root/read-only are planned; rate limiting, cache encryption, application-level auth, and local Compose non-root remain open. Do not mark closed. |
 | `ASSUMPTION-2` | Inside Docker the app binds `0.0.0.0:8000`; Compose publishes only to host `127.0.0.1:8000`. | Tech Lead | Closed | None. Any change to host `0.0.0.0` is rejected. |
 | `ASSUMPTION-5` | Admin endpoints require no auth because host publish is loopback-only. | Tech Lead + Security Engineer | Closed, bounded by `ASSUMPTION-17` | Reopen only if host trust changes. |
 | `ASSUMPTION-7` | Generation is serialized by one process-wide lock; idle unload uses the same lock. | Tech Lead | Closed | None. Do not weaken the lock for idle unload. |
@@ -108,7 +108,7 @@ Actual implementation of any mitigation, replacement of the loopback trust model
 
 ## 5. Open and needed mitigations
 
-The report distinguishes accepted controls, open recommendations, and deferred scope. The user later approved the contract-preserving `DECISION-22` download-hardening change, the optional-token change `DECISION-24`, and the reproducible-build change `DECISION-25`; all other recommendations remain unimplemented until explicitly scoped. `ASSUMPTION-17` remains open, so auth/rate limiting, non-root container changes, and cache encryption are still deferred.
+The report distinguishes accepted controls, open recommendations, and deferred scope. The user later approved the contract-preserving `DECISION-22` download-hardening change, the optional-token change `DECISION-24`, and the reproducible-build change `DECISION-25`; all other recommendations remain unimplemented until explicitly scoped. `ASSUMPTION-17` remains open. `DECISION-26` plans gateway API-key auth, TLS, K8s Secrets, and non-root/read-only cloud pods for Phase 2, but explicitly defers rate limiting, cache encryption, application-level auth, and local Compose non-root; no Phase 2 control is implemented by this documentation.
 
 | ID | Finding | Severity | Effort | Owner module | Recommendation | Current status |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -120,8 +120,8 @@ The report distinguishes accepted controls, open recommendations, and deferred s
 | `SEC-G-06` | Idle retention keeps decoded GGUF bytes in process RAM after response for up to 24 hours by configuration. | Low–Medium | Info | C6 LlamaRuntimeAdapter | Accepted trade-off from `DECISION-21`. Keep bounded `<= 86400`, admin unload, and error unload. Monitor RAM on constrained hosts. | Accepted; no code change |
 | `SEC-G-07` | `_expire_idle` uses a blocking lifecycle-lock acquire. | Info | S (docs) | C6 LlamaRuntimeAdapter | Document that blocking is required for safe unload; do not substitute a timed skip, which could unload mid-generation or miss the idle deadline. | Accepted; documented here |
 | `SEC-G-08` | Cache fingerprint is `size:mtime_ns`; a same-size, same-mtime GGUF swap can replay stale cached output. | Low–Medium | M | C9 ResponseCache + C6 runtime | Streamed SHA-256 fingerprint cached per alias/path; accept one-time cache-key invalidation. | Deferred by existing decision |
-| `SEC-G-09` | Container runs as root. | Medium on shared host | M | C11 DockerRuntime | Add non-root `USER` plus Windows bind-mount ownership verification or UID/GID-matched runtime user. | Deferred under `ASSUMPTION-17` |
-| `SEC-G-10` | No auth or rate limiting; any local host process can call chat and admin routes. Admin routes can trigger downloads, unload models, or unregister aliases. | High for admin abuse; Medium for chat; High on shared/remote host | M–L | New auth module + C7/C8 + C12 OpenCode headers | Add only after host-trust decision. Key storage/rotation and OpenCode header wiring required. | Deferred under `ASSUMPTION-17` |
+| `SEC-G-09` | Container runs as root. | Medium on shared host | M | C11 DockerRuntime | Add non-root `USER` plus Windows bind-mount ownership verification or UID/GID-matched runtime user. | Phase 2 cloud pod planned by `DECISION-26` (`AC-117`–`AC-122`); local Compose still deferred under `ASSUMPTION-17` |
+| `SEC-G-10` | No auth or rate limiting; any local host process can call chat and admin routes. Admin routes can trigger downloads, unload models, or unregister aliases. | High for admin abuse; Medium for chat; High on shared/remote host | M–L | Gateway ingress + C7/C8 + C12 OpenCode headers | For Phase 2, enforce API key and TLS at the gateway, keep admin routes internal, and leave the app auth-less. Rate limiting remains a separate open decision; local Compose is unchanged. | Gateway API-key auth planned by `DECISION-26` (`AC-107`–`AC-116`); rate limiting still deferred under `ASSUMPTION-21` |
 | `SEC-G-11` | Cache encryption and shorter TTL are not implemented. | Medium on shared host | M–L | C9 ResponseCache + C2 config | Add encryption-at-rest and configurable shorter TTL only after host-trust decision. | Deferred under `ASSUMPTION-17` |
 | `SEC-G-12` | Synchronous public-model download has no approved-alias gate, async queue, or cancellation endpoint. | Low–Medium | M–L | C8 AdminRoutes + C4 downloader | Prefer startup-configured aliases; add gating/queue/cancellation only as explicit scope expansion. | Deferred |
 | `SEC-G-13` | No cache administration endpoint or per-request bypass; operators rely on TTL, LRU eviction, or manual file deletion. | Low | M | C8 AdminRoutes + C9 ResponseCache | Add scoped cache purge/bypass only after product decision. | Deferred |
@@ -130,6 +130,14 @@ The report distinguishes accepted controls, open recommendations, and deferred s
 | `SEC-G-16` | TOCTOU between `preflight.check_download` and `downloader.download`: disk space can be consumed after the check passes. Startup downloads now preflight every missing model before bounded parallel writes. | Low | S | C5 ResourcePreflight + C4 downloader | Re-check free space immediately before writing, or tolerate `ENOSPC` cleanly; accepted for MVP. `download.max_parallel_downloads` limits concurrent startup writes to at most 16. | Accepted residual; F-05 partial |
 | `SEC-G-17` | `hf` subprocess output inherits container stdout/stderr. The application logs no token, but a future CLI could print a credential-bearing URL. | Low | S | C4 downloader + C11 logging | Capture or redact CLI diagnostics if the tool changes; continue never passing the token as a CLI argument and never pasting interpolated Compose output. | Conditional residual |
 | `SEC-G-18` | Once a streaming response starts, HTTP status is already `200`, so later generation/cache failures cannot use the normal `502`/`504` HTTP envelopes. | Info | S (docs) | C7 ChatRoutes + C10 ErrorMapper | Clients must inspect terminal SSE `error` events. The event uses the sanitized mapper, omits `[DONE]`, closes chunks before unload, releases the lock, and never caches partial content. Pre-header failures retain normal HTTP errors. | Accepted and documented by `DECISION-23` |
+
+### Phase 2 planned security posture (`DECISION-26`, not implemented)
+
+- Public trust boundary moves from host loopback to a TLS gateway that enforces an API key before forwarding. `/health` and per-alias chat may be public; `/v1/models` and all `/admin/models*` routes remain internal-only. NetworkPolicy blocks direct pod access and a misconfigured public admin route is a release blocker.
+- The application stays auth-less: it receives no API key, makes no secrets-manager calls, and does not implement rate limiting. Gateway audit logs record a masked key identity, alias, status, and request ID; application logs keep the current no-token/no-prompt/no-path/no-stack-trace contract.
+- Cloud pods use `runAsNonRoot: true`, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, and `seccompProfile: RuntimeDefault`. Writable paths are limited to `models`, `.cache`, and `/tmp`; `HF_TOKEN` and object-store credentials come from K8s Secrets or workload identity, never images, YAML, CLI arguments, or logs.
+- Rate limiting and abuse controls are explicitly deferred despite public API-key exposure. Accepted residual risk: a valid key can exhaust the 600-second lifecycle lock (`503`), trigger repeated cold loads/downloads, and hold a GGUF for up to `idle_unload_seconds` (maximum 86400 s). If added later, enforce at the gateway so application contracts stay unchanged.
+- Cache encryption, shorter TTL, content-hash GGUF fingerprints, and local Compose non-root remain open. `ASSUMPTION-17` is revisited but not closed; `ASSUMPTION-21` records the accepted rate-limit residual.
 
 ## 6. Review provenance / team memory
 
@@ -163,7 +171,7 @@ Each criterion is one observable behavior. `SEC-*` criteria define what must be 
 | `SEC-9` | `DELETE /admin/models/{alias}` removes cache entries for that alias and leaves unrelated entries intact. | C8 AdminRoutes + C9 ResponseCache | Planned (`SEC-G-03`) |
 | `SEC-10` | A request exceeding the server-side generation or body cap returns stable `422` without acquiring the model lock. | C7 ChatRoutes | Planned (`SEC-G-04`) |
 | `SEC-11` | This report records the current answer to `ASSUMPTION-17` and does not mark it closed without a product decision. | Product Lead | Open by user choice |
-| `SEC-12` | Auth/rate limiting, non-root container, and cache encryption remain deferred until `ASSUMPTION-17` is decided. | Product Lead + C11/C9 | Deferred |
+| `SEC-12` | Local Compose auth/rate limiting, cache encryption, and non-root remain unchanged. Phase 2 plans gateway API-key auth and cloud non-root/read-only under `DECISION-26`; rate limiting and cache encryption stay deferred. | Product Lead + C11/C9 + platform | Partially planned; still open |
 | `SEC-13` | Content-hash GGUF fingerprints are introduced only with a documented cache-key invalidation note and tests. | C9 ResponseCache | Deferred |
 | `SEC-14` | Every deployment prep, PR merge, monthly cache audit, and host-trust change records a review entry in this report. | Documentation owner | Maintenance rule |
 | `SEC-15` | Invalid aliases, non-public repository IDs, path-separator filenames, and non-`.gguf` filenames are rejected before download or registration. | C2 ConfigLoader | Implemented |
@@ -171,6 +179,11 @@ Each criterion is one observable behavior. `SEC-*` criteria define what must be 
 | `SEC-17` | An already-present GGUF is skipped rather than re-downloaded. | C4 HfCliDownloader | Implemented |
 | `SEC-18` | Application logs contain no token, prompt, path, or stack trace; normal download logs contain only alias/repository/filename metadata. | C10 error mapping + C4 downloader | Implemented; `SEC-G-17` residual |
 | `SEC-19` | A download preflight TOCTOU review is repeated if downloads become concurrent or move outside the lifecycle lock. | C5 ResourcePreflight + C4 downloader | Deferred accepted residual |
+| `SEC-20` | A missing or invalid API key is rejected by the gateway with `401` before the app receives the request, and no key value appears in app logs. | Gateway ingress + C7 ChatRoutes | Planned (`DECISION-26`, `AC-107`–`AC-109`, `AC-129`) |
+| `SEC-21` | `/health` and per-alias chat are the only public paths; `/admin/models*` is unreachable publicly and direct pod access is denied by NetworkPolicy. | Gateway ingress + C8 AdminRoutes | Planned (`DECISION-26`, `AC-110`–`AC-114`) |
+| `SEC-22` | Cloud pod spec uses non-root, read-only root, dropped capabilities, and RuntimeDefault seccomp, with writable mounts only at `models`, `.cache`, and `/tmp`. | C11 DockerRuntime + Helm | Planned (`DECISION-26`, `AC-117`–`AC-122`) |
+| `SEC-23` | `HF_TOKEN`, API-key references, and object-store credentials originate only from K8s Secrets or workload identity and never appear in YAML, image layers, CLI arguments, logs, or shared output. | C2 config + C11 + platform | Planned (`DECISION-26`, `AC-123`–`AC-130`) |
+| `SEC-24` | Rate limiting is explicitly deferred and its lock-exhaustion/download-abuse residual risk is recorded under `ASSUMPTION-21`; `ASSUMPTION-17` is not marked closed. | Product Lead + Security Engineer | Open by decision (`AC-155`–`AC-160`) |
 
 ## 8. Maintenance and review cadence
 
@@ -181,6 +194,7 @@ Each criterion is one observable behavior. `SEC-*` criteria define what must be 
 | Monthly, or when cache config changes | Audit `.cache/responses/` size and TTL behavior; confirm no secrets in prompts. | Update `SEC-G-02`/`SEC-G-03`/`SEC-I-04` if needed. |
 | Any Compose/Dockerfile/config change | Re-check host publish, mounts, token injection, root-user status, and CLI output handling. | Update risk register and `SEC-1`/`SEC-2`/`SEC-12`/`SEC-G-17`. |
 | Host usage change | Reassess `ASSUMPTION-17`. If shared or remotely reachable, open product scope for `SEC-G-09`–`SEC-G-11` and `SEC-G-10`. | Do not silently close the assumption. |
+| Phase 2 deployment prep | Verify gateway API-key and TLS policy, admin-route exclusion, NetworkPolicy, non-root/read-only pod spec, secret references, and digest-pinned images before exposing the public endpoint. | Update `SEC-20`–`SEC-24` and the Phase 2 planned posture section. |
 | Quarterly | Review open gaps, severity, effort, and deferred decisions. | Update status table and review provenance. |
 
 ## 9. Verification evidence for this report
